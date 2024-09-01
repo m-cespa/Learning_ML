@@ -161,6 +161,7 @@ def train(args: SimpleMLPTrainingArgs):
     plt.ylabel('Cross entropy loss')
     plt.title('Simple MLP training on MNIST')
     plt.grid(True)
+    plt.savefig('Simple_MLP_training.jpg', format='jpeg', dpi=300)
     plt.show()
 
     plt.figure(figsize=(10,6))
@@ -170,6 +171,7 @@ def train(args: SimpleMLPTrainingArgs):
     plt.ylabel('Accuracy = correct_predictions / len(test_set)')
     plt.title('Simple MLP accuracy on MNIST')
     plt.grid(True)
+    plt.savefig('Simple_MLP_accuracy.jpg', format='jpeg', dpi=300)
     plt.show()
 
 args = SimpleMLPTrainingArgs()
