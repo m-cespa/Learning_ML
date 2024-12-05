@@ -1,4 +1,4 @@
-from typing import List, Callable
+from typing import List, Callable, Tuple
 import numpy as np
 import random
 from tqdm import tqdm
@@ -40,17 +40,23 @@ class BaseLayer:
         raise NotImplementedError('Method must be implemented for subclasses.')
     
 class Layer(BaseLayer):
-    def __init__(self, size: int, previous: 'Layer'=None):
+    def __init__(self, size: int, batch_dim: int=1, channel_dim: int=1, previous: 'Layer'=None):
         """
         Creates Layer of {size} neurons.
 
         Args:
             size: number of neurons in layer.
+            batch_dim (optional): dimension of batches for training, set to 1 default.
+            channel_dim (optional): dimension of colour channels (3 for RGB), set to 1 default.
             previous (optional): pointer to previous layer.
             next (optional): pointer to next layer.
         """
         super().__init__()
         self.size = size
+        self.batch_dim = batch_dim
+        self.channel_dim = channel_dim
+
+        self.A = np.zeros((batch_dim, channel_dim, size))
         self.W = None
         self.B = None
         self.delta = None
@@ -90,10 +96,10 @@ class Layer(BaseLayer):
         
         prev_size = current_layer.size
         
-        weights_matrix = np.random.uniform(-1, 1, (self.size, prev_size))
-        biases_vector = np.zeros(self.size)
+        weights_tensor = np.random.uniform(-1, 1, (self.batch_dim, self.channel_dim, self.size, prev_size))
+        biases_tensor = np.zeros((self.batch_dim, self.channel_dim, self.size))
         
-        return weights_matrix, biases_vector
+        return weights_tensor, biases_tensor
     
     def forward(self) -> None:
         """
@@ -102,23 +108,24 @@ class Layer(BaseLayer):
         """
         if self.previous is None:
             raise ValueError("Previous layer not assigned.")
-        
-        # edge case for 1D matrices
-        if len(self.W.shape) == 1:
-            z = np.matmul(self.previous.A, self.W.reshape(-1,1)) + self.B
-            self.A = z
-            return
-        
-        assert self.previous.A.shape[0] == self.W.shape[1]
+                
+        # assert self.previous.A.shape == (self.batch_dim, self.channel_dim, self.previous.size)
+        # assert self.W.shape == (self.batch_dim, self.channel_dim, self.size, self.previous.size)
+        # assert self.B.shape == (self.batch_dim, self.channel_dim, self.size)
 
-        z = np.matmul(self.previous.A, self.W.T) + self.B
+        # contracting W tensor with activation tensor over previous.size dimension
+        z = np.einsum('bcj, bcij -> bci', self.previous.A, self.W) + self.B
+        assert z.shape == (self.batch_dim, self.channel_dim, self.size)
         self.A = z
 
-    def backward(self, error) -> np.ndarray:
+    def backward(self, error: np.ndarray) -> np.ndarray:
         """
         Layer passes backwards D * W.T updated error vector.
-        W is the weights of the first downstream Layer (skipping ActivationLayers).
+        W is the weights of the first (current) downstream Layer (skipping ActivationLayers).
         Previous layer should be activation layer which will rescale the saved error vector.
+
+        Args:
+            error shape: (batch_dim, channel_dim, current.size)
         """
         if self.activation_deriv is None:
             self.activation_deriv = 1
@@ -126,20 +133,27 @@ class Layer(BaseLayer):
         if self.previous is None:
             raise ValueError('No previous layer to pass error to.')
 
+        # next layer should be Activation
         current = self.next
+
+        # move forward until you find first Layer
         while not isinstance(current, Layer):
+            # if the next layer is None, we are at the output layer
+            # set the error tensor of self to error tensor of output layer
             if current.next is None:
                 self.delta = error
                 return self.delta
 
             current = current.next
+        # current should be the first downstream Layer
 
-        # edge case for 1D matrices
-        if len(current.W.shape) == 1:
-            self.delta = np.matmul(error, current.W[np.newaxis]) * self.activation_deriv
-            return self.delta
+        assert error.shape == (self.batch_dim, self.channel_dim, current.size)
 
-        self.delta = np.matmul(error, current.W) * self.activation_deriv
+        # contracting W tensor with error tensor current.size dimendion
+        # we expect each error vector (per batch per channel) to be the size of the current layer
+        self.delta = np.einsum('bci, bcij -> bcj', error, current.W) * self.activation_deriv
+
+        assert self.delta.shape == (self.batch_dim, self.channel_dim, self.size)
         
         return self.delta
 
@@ -152,7 +166,7 @@ class ActivationLayer(BaseLayer):
         if self.previous:
             self.A = self.activation_function(self.previous.A)
 
-    def backward(self, error: np.ndarray) -> List[np.ndarray]:
+    def backward(self, error: np.ndarray) -> np.ndarray:
         """
         ActivationLayer passes backwards derivative evaluated on its activations
         multiplied by fed back error vector.
@@ -165,6 +179,8 @@ class ActivationLayer(BaseLayer):
         if self.previous is None:
             raise ValueError('No previous layer to pass error to.')
         
+        # previous layer to activation is always a Layer object
+        # set the deriv attribute to the correct value
         self.previous.activation_deriv = deriv
 
         return error
@@ -188,32 +204,50 @@ class Network:
             'ce': self.CELoss
         }
 
+        self.batch_dim = layers[0].A.shape[0]
+        self.channel_dim = layers[0].A.shape[1]
+
     def forward(self, input_data: np.ndarray) -> np.ndarray:
         """
-        Set InputLayer activations to arg: input_data.
-        Perform forward pass.
+        Args:
+            input_data shape: (batch_dim, channel_dim, input_layer.size)
         """
+        assert input_data.shape == self.layers[0].A.shape
+
         self.layers[0].A = input_data
         for layer in self.layers[1:]:
             layer.forward()
         return self.layers[-1].A
     
-    def MSELoss(self, x: np.ndarray, y: np.ndarray) -> float:
-        return 0.5 * np.sum((x - y) ** 2)
+    def MSELoss(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        return 0.5 * np.sum((x - y) ** 2, axis=-1)
     
-    def CELoss(self, x: np.ndarray, y: np.ndarray) -> float:
+    def CELoss(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         x = np.clip(x, 1e-15, 1 - 1e-15)
-        return -np.sum(y * np.log(x))
+        return -np.sum(y * np.log(x), axis=-1)
     
-    def backward(self, data: np.ndarray, labels: np.ndarray, lr: float, loss_func: str) -> float:
-        forward_out = self.forward(data)
+    def backward(self, data_tensor: np.ndarray, label_tensor: np.ndarray, lr: float, loss_func: str) -> np.ndarray:
+        """
+        Perform one backwards pass.
+
+        Args:
+            data_tensor shape: (batch_dim, channel_dim, input_dim)
+            label_tensor shape: (batch_dim, channel_dim, output_dim)
+            lr: learning rate float
+            loss_func: specifies which loss function to apply
+        """
+        forward_out = self.forward(data_tensor)
+
+        assert forward_out.shape == label_tensor.shape
 
         if loss_func not in self.loss_functions:
             raise ValueError(f'Unsupported loss function: {loss_func}')
         
-        loss = self.loss_functions[loss_func](forward_out, labels)
+        loss = self.loss_functions[loss_func](forward_out, label_tensor)
 
-        error = forward_out - labels
+        assert loss.shape == (self.batch_dim, self.channel_dim)
+
+        error = forward_out - label_tensor
         current_error = error
 
         # back-propagate errors
@@ -223,34 +257,38 @@ class Network:
         # perform gradient descent
         for layer in self.layers[1:]:
             if isinstance(layer, Layer):
+                # delta.shape: (batch_dim, channel_dim, layer.size)
+                # previous.A.shape: (batch_dim, channel_dim, previous.size)
                 layer.B -= lr * layer.delta
-                layer.W -= lr * np.outer(layer.delta, layer.previous.A)
+                layer.W -= lr * np.einsum('bci, bcj -> bcij', layer.delta, layer.previous.A)
 
         return loss
     
-    def learn(self, learn_data: np.ndarray, lr: float, epochs: int, loss_func: str) -> None:
+    def learn(self, learn_data: List[Tuple[np.ndarray, np.ndarray]], lr: float, epochs: int, loss_func: str) -> None:
         """
-        Learning data is [[inputs], [labels]] to perform unsupervised learning.
-        Backpropagation performed with specified learning rate {lr}.
-        Process iterated for {epochs}
+        Args:
+            learn_data: [(input_tensor, label_tensor), (input_tensor, label_tensor) ... ]
+                each input_tensor has shape: (batch_dim, channel_dim, input_layer.size)
+            lr: learning rate float
+            epochs: number of training epochs int
+            loss_func: specifies which loss function to apply
         """
         losses = []
         for epoch in tqdm(range(epochs), desc="Training Progress"):
             epoch_loss = 0
-            np.random.shuffle(learn_data)
 
             for input, label in learn_data:
-                input = np.array(input)
-                label = np.array(label)
                 loss = self.backward(input, label, lr, loss_func)
-                epoch_loss += loss
+                
+                # expect loss object to have shape (batch_dim, channel_dim, output_dim)
+                epoch_loss += np.mean(loss)
 
             losses.append(epoch_loss / len(learn_data))
 
         plt.figure()
         plt.plot(range(epochs), losses, label='Loss')
         plt.xlabel('Epoch')
-        plt.ylabel('Loss')
+        plt.ylabel('Average Loss')
         plt.title('Training Loss Over Epochs')
         plt.legend()
         plt.show()
