@@ -38,7 +38,26 @@ class BaseLayer:
     
     def backward(self):
         raise NotImplementedError('Method must be implemented for subclasses.')
-    
+
+class Conv2D(BaseLayer):
+    def __init__(self, batch_dim: int, in_channels: int, out_channels: int, kernel_size: int, stride: int=1, padding: int=0):
+        """
+        Creates a Convolutional Kernel.
+
+        Args:
+            in_channels: number of input (colour) channels
+            out_channels: number of channels output is compressed down to
+            kernel_size: size of convolutional kernel square
+            stride: step size of kernel over image matrix
+            padding: adds extra border of 0s to original image
+        """
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+
+        self.W = np.random.uniform(-1, 1, (batch_dim, out_channels, in_channels, kernel_size, kernel_size))
+        self.B = np.zeros(batch_dim, out_channels)
+
 class Layer(BaseLayer):
     def __init__(self, size: int, batch_dim: int=1, channel_dim: int=1, previous: 'Layer'=None):
         """
