@@ -7,6 +7,7 @@ from typing import List
 from cross_val import CrossValidation
 import pickle
 import os
+import matplotlib.pyplot as plt
 
 def load_forest(folder: str, filename: str) -> RandomForest:
     """
@@ -22,7 +23,27 @@ def load_forest(folder: str, filename: str) -> RandomForest:
 
     return forest
 
-def cross_validation(decision_feature: str, hyperparams: List[int], k: int=5) -> List[float]:
+def plot_cross_val_scores(all_scores: List, hyperparams: List[int]):
+    all_scores = np.array(all_scores)
+
+    num_folds = all_scores.shape[0]
+    
+    plt.figure(figsize=(10, 6))
+    
+    for i, hyperparam in enumerate(hyperparams):
+        plt.plot(range(1, num_folds + 1), all_scores[:, i], marker='o', label=f'{hyperparam} trees')
+
+    plt.title('Cross-validation Scores for Different Hyperparameters', fontsize=14)
+    plt.xlabel('Fold', fontsize=12)
+    plt.ylabel('Accuracy', fontsize=12)
+    plt.xticks(range(1, num_folds + 1))
+    plt.legend(title='Tree count')
+    
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+def cross_validation(decision_feature: str, hyperparams: List[int], k: int=5) -> List:
     """
     Run k-fold cross-validation.
     
@@ -44,12 +65,16 @@ def cross_validation(decision_feature: str, hyperparams: List[int], k: int=5) ->
     # score of best forest on each test fold
     split_scores = []
 
+    # all scores for each hyperparameter at each fold
+    all_scores = []
+
     for i, split in enumerate(splits):
         print(f"\nProcessing fold {i + 1} of {k}...")
         train_data, validation_data, test_data = split
 
-        # score of the best forest, after validation selection
+        # keeps track of which hyperparameter forest scores best in validation
         best_forest_score = 0
+        fold_scores = []
 
         for tree_count in hyperparams:
             forest = RandomForest(
@@ -70,6 +95,8 @@ def cross_validation(decision_feature: str, hyperparams: List[int], k: int=5) ->
             )
             accuracy = correct_predictions / len(true_values)
 
+            fold_scores.append(accuracy)
+
             print(f"Fold {i + 1} forest with {tree_count} trees accuracy: {accuracy}")
 
             # filter for best forest within hyperparameter set
@@ -78,6 +105,8 @@ def cross_validation(decision_feature: str, hyperparams: List[int], k: int=5) ->
                 best_forest = f'fold={i + 1}_h={tree_count}'
 
                 forest.save_forest(folder='forests_folder', filename=f'fold={i + 1}_h={tree_count}')
+
+        all_scores.append(fold_scores)
 
         validated_forest = load_forest(folder='forests_folder', filename=best_forest)
 
@@ -97,25 +126,14 @@ def cross_validation(decision_feature: str, hyperparams: List[int], k: int=5) ->
             if os.path.isfile(file_path):
                 os.remove(file_path)
 
-    return split_scores
+    return split_scores, all_scores
 
             
 selected_features = 'Survived,Pclass,Sex,Age,SibSp,Parch,Fare,Embarked'
 data = pd.read_csv('Random_Forest_from_scratch/titanic/train.csv')[selected_features.split(',')]
 
-final_scores = cross_validation(decision_feature='Pclass', hyperparams=[3,5,7])
+final_scores, all_scores = cross_validation(decision_feature='Survived', hyperparams=[3,5,7], k=10)
 
 print(f"\n Scores for best forest after validation on each test fold: {final_scores}")
 
-
-
-
-
-
-
-
-
-
-
-
-
+plot_cross_val_scores(all_scores, hyperparams=[3, 5, 7])
