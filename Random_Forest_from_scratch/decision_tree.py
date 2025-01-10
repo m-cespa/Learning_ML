@@ -5,6 +5,8 @@ from typing import List
 import pandas as pd
 import random
 from collections import deque, Counter
+import pickle
+import os
 
 class TreeNode:
     """
@@ -76,7 +78,7 @@ class DecisionTree:
 
             # categorical features: fill NaN with mode of that column
             most_frequent_value = self.train_data[self.decision_feature].mode()[0]
-            self.train_data[self.decision_feature].fillna(most_frequent_value, inplace=True)
+            self.train_data[self.decision_feature] = self.train_data[self.decision_feature].fillna(most_frequent_value)
         else:
             # numerical features: fill NaN with median of that column
             mean_value = self.train_data[self.decision_feature].median()
@@ -412,19 +414,29 @@ class DecisionTree:
 class RandomForest:
     def __init__(self, train_data: pd.DataFrame, decision_feature: str, k: int=6, tree_count: int=5):
         self.train_data = train_data
+        self.decision_feature = decision_feature
 
         if tree_count % 2 == 0:
             tree_count += 1
             print('\n Have increased tree count by 1 to ensure odd number in forest.\n')
 
         # give each tree a bootstrap sample of the full training data set
+        # IMPORTANT: make sure bootstrap samples keep original dataset unchanged
+
+        copy_data = train_data.copy()
         self.forest = [
             DecisionTree(
-                train_data=train_data.sample(n=train_data.shape[0], replace=True),
+                train_data=copy_data.sample(n=train_data.shape[0], replace=True).reset_index(drop=True),
                 k=k,
                 decision_feature=decision_feature
-                ) for _ in range(tree_count)
-            ]
+            )
+            for _ in range(tree_count)
+        ]
+
+        # define features which need to be output as integer or string
+        self.str_outs = ['Embarked', 'Sex']
+        self.int_outs = ['Survived', 'Pclass', 'Age', 'SibSp', 'Parch']
+        self.float_outs = ['Fare']
 
     def learn(self, thresholder: str) -> None:
         for tree in self.forest:
@@ -443,15 +455,35 @@ class RandomForest:
         if len(decision_count) != 1:
             raise ValueError('Trees have returned decision arrays of differing lengths.')
         
-        # tree_votes_array = np.array(tree_votes)
+        tree_votes_array = np.array(tree_votes)
 
-        # # compute majority vote over column direction
-        # majority_votes = []
-        # for column in tree_votes_array.T:
-        #     vote_counts = Counter(column)
+        # compute majority vote over column direction
+        majority_votes = []
+        for column in tree_votes_array.T:
+            vote_counts = Counter(column)
 
-        #     # if all votes equally likely, choose the first one
-        #     majority_vote = vote_counts.most_common(1)[0][0]
-        #     majority_votes.append(str(majority_vote))
+            # if all votes equally likely, choose the first one
+            majority_vote = vote_counts.most_common(1)[0][0]
+            majority_votes.append(str(majority_vote))
 
-        return tree_votes
+        # ensure the votes are converted to the correct data type
+        if self.decision_feature in self.str_outs:
+            majority_votes = [str(vote) for vote in majority_votes]
+        elif self.decision_feature in self.int_outs:
+            majority_votes = [int(vote) for vote in majority_votes]
+        elif self.decision_feature in self.float_outs:
+            majority_votes = [float(vote) for vote in majority_votes]
+        else:
+            raise ValueError(f"Unknown decision_feature type: {self.decision_feature}")
+
+        return majority_votes
+    
+    def save_forest(self, folder: str, filename: str) -> None:
+        """
+        Save the trained forest to a file using pickle.
+        """
+        os.makedirs(folder, exist_ok=True)
+
+        filepath = os.path.join(folder, filename)
+        with open(filepath, 'wb') as f:
+            pickle.dump(self, f)
