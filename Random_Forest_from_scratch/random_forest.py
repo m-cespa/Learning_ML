@@ -43,7 +43,7 @@ def plot_cross_val_scores(all_scores: List, hyperparams: List[int]):
     plt.tight_layout()
     plt.show()
 
-def cross_validation(decision_feature: str, hyperparams: List[int], k: int=5) -> List:
+def cross_validation(decision_feature: str, hyperparams: List[int], k: int=5, min_child_nodes: int=5) -> List:
     """
     Run k-fold cross-validation.
     
@@ -83,7 +83,7 @@ def cross_validation(decision_feature: str, hyperparams: List[int], k: int=5) ->
                 tree_count=tree_count
                 )
             
-            forest.learn(thresholder='iter')
+            forest.learn(thresholder='iter', min_child_nodes=min_child_nodes)
 
             # create prediction array
             forest_prediction = forest.forest_vote(validation_data)
@@ -132,7 +132,11 @@ def cross_validation(decision_feature: str, hyperparams: List[int], k: int=5) ->
 selected_features = 'Survived,Pclass,Sex,Age,SibSp,Parch,Fare,Embarked'
 data = pd.read_csv('Random_Forest_from_scratch/titanic/train.csv')[selected_features.split(',')]
 
-final_scores, all_scores = cross_validation(decision_feature='Survived', hyperparams=[3,5,7], k=10)
+final_scores, all_scores = cross_validation(
+                                            decision_feature='Pclass', 
+                                            hyperparams=[3, 5, 7], 
+                                            k=5, 
+                                            min_child_nodes=5)
 
 print(f"\n Scores for best forest after validation on each test fold: {final_scores}")
 

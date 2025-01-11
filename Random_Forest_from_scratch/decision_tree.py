@@ -250,7 +250,7 @@ class DecisionTree:
         
         return splitting_feature
 
-    def _learn(self, data: pd.DataFrame, k: int, thresholder: str, min_child_nodes: int=10) -> None:
+    def _learn(self, data: pd.DataFrame, k: int, thresholder: str, min_child_nodes: int=5) -> None:
         """
         Learn decision tree Recursively using ID3 until stopping conditions met.
         """
@@ -320,8 +320,8 @@ class DecisionTree:
         else:
             raise ValueError('Invalid splitting rule. Must be categorical (0) or numerical (1).')
 
-    def learn(self, thresholder: str) -> None:
-        self.root = self._learn(data=self.train_data, k=self.k, thresholder=thresholder)
+    def learn(self, thresholder: str, min_child_nodes: int=5) -> None:
+        self.root = self._learn(data=self.train_data, k=self.k, thresholder=thresholder, min_child_nodes=min_child_nodes)
     
     def decide(self, test_data: pd.DataFrame) -> List:
         """
@@ -411,6 +411,7 @@ class DecisionTree:
         if current_level_nodes:
             print("   ".join(current_level_nodes))
 
+
 class RandomForest:
     def __init__(self, train_data: pd.DataFrame, decision_feature: str, k: int=6, tree_count: int=5):
         self.train_data = train_data
@@ -438,9 +439,9 @@ class RandomForest:
         self.int_outs = ['Survived', 'Pclass', 'Age', 'SibSp', 'Parch']
         self.float_outs = ['Fare']
 
-    def learn(self, thresholder: str) -> None:
+    def learn(self, thresholder: str, min_child_nodes: int=5) -> None:
         for tree in self.forest:
-            tree.learn(thresholder=thresholder)
+            tree.learn(thresholder=thresholder, min_child_nodes=min_child_nodes)
 
     def forest_vote(self, test_data: pd.DataFrame) -> List:
         tree_votes = []
