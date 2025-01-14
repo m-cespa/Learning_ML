@@ -7,20 +7,21 @@ import random
 from collections import deque, Counter
 import pickle
 import os
+from itertools import combinations
 
 class TreeNode:
     """
     Base class for decision tree nodes.
     """
-    def __init__(self, label: str, children: List['TreeNode']=None):
+    def __init__(self, label: str, children: List['TreeNode']|None=None):
         self.label = label
-        self.children = children if children is not None else []
+        self.children = children or []
 
 class FeatureNode(TreeNode):
     """
     Node representing the feature about which the split is made.
     """
-    def __init__(self, label: str, feature_type: str, children: List[TreeNode]=None):
+    def __init__(self, label: str, feature_type: str, children: List[TreeNode]|None=None):
         super().__init__(label=label, children=children)
         self.feature_type = feature_type
 
@@ -29,8 +30,9 @@ class IntermediateNode(TreeNode):
     Node representing the classes of the feature or threshold directions for the split.
     Should only ever have 1 child.
     """
-    def __init__(self, label: str, children: List[TreeNode]=None):
+    def __init__(self, label: str, children: List[TreeNode]|None=None, parseable_bound: float=0.):
         super().__init__(label=label, children=children)
+        self.parseable_bound = parseable_bound
         
 class LeafNode(TreeNode):
     """
@@ -40,7 +42,7 @@ class LeafNode(TreeNode):
         super().__init__(label=label, children=[])
 
 class DecisionTree:
-    def __init__(self, train_data: pd.DataFrame, k: int, decision_feature: str, numerical_threshold_lim: int=2):
+    def __init__(self, train_data: pd.DataFrame, k: int, decision_feature: str, numerical_threshold_lim: int=1):
         """
         args:
             train_data = pandas dataframe
@@ -56,7 +58,7 @@ class DecisionTree:
         self.thresholder_types = {
             'median': self.median_thresholder,
             'mean': self.mean_thresholder,
-            'iter': self.iterative_thresholder
+            'iter_bf': self.iterative_thresholder_bf
         }
         
         if decision_feature not in train_data.columns:
@@ -89,9 +91,9 @@ class DecisionTree:
         Calculate the entropy of a series (target variable)
         """
         y = y.astype(str)
-        values, counts = np.unique(y, return_counts=True)
+        _, counts = np.unique(y, return_counts=True)
         probabilities = counts / len(y)
-        return -np.sum(probabilities * np.log2(probabilities))
+        return float(-np.sum(probabilities * np.log2(probabilities)))
 
     def info_entropy_categorical(self, data: pd.DataFrame, feature: str) -> float:
         """
@@ -110,9 +112,9 @@ class DecisionTree:
             return 0
 
         for _, subset in subsets:
-            target_values = subset[f'{self.decision_feature}']
+            target_values = subset[self.decision_feature]
 
-            values, counts = np.unique(target_values, return_counts=True)
+            _, counts = np.unique(target_values, return_counts=True)
             probabilities = counts / target_values.size
 
             non_zero_probabilities = probabilities[probabilities > 0]
@@ -122,18 +124,34 @@ class DecisionTree:
             N_subset = subset.shape[0]
             weighted_entropy += (N_subset / N) * subset_entropy
 
-        return weighted_entropy
+        return float(weighted_entropy)
 
-    def info_entropy_numerical(self, data: pd.DataFrame, feature: str, threshold: float) -> float:
+    def info_entropy_numerical(self, data: pd.DataFrame, feature: str, thresholds: List[float]) -> float:
         """
         Returns weighted entropy for each subset based on numerical threshold splitting.
         NaN entries are excluded from entropy calculation.
         """
         non_nan_data = data[~data[feature].isna()]
 
-        subset_1 = non_nan_data[non_nan_data[feature] <= threshold]
-        subset_2 = non_nan_data[non_nan_data[feature] > threshold]
+        subsets = []
+        n = len(thresholds)
 
+        if n == 1:
+            x = thresholds[0]
+            subsets.append(non_nan_data[non_nan_data[feature] <= x])
+            subsets.append(non_nan_data[non_nan_data[feature] > x])
+        else:
+            for i, x in enumerate(thresholds):
+                if i == 0:
+                    subsets.append(non_nan_data[non_nan_data[feature] <= x])
+                if i == n-1:
+                    y = thresholds[i-1]
+                    subsets.append(non_nan_data[(non_nan_data[feature] > y) & (non_nan_data[feature] <= x)])
+                    subsets.append(non_nan_data[non_nan_data[feature] > x])
+                else:
+                    y = thresholds[i-1]
+                    subsets.append(non_nan_data[(non_nan_data[feature] > y) & (non_nan_data[feature] <= x)])
+            
         weighted_entropy = 0.0
         N = non_nan_data.shape[0]
 
@@ -141,10 +159,10 @@ class DecisionTree:
         if N == 0:
             return 0
 
-        for subset in [subset_1, subset_2]:
-            target_values = subset[f'{self.decision_feature}']
+        for subset in subsets:
+            target_values = subset[self.decision_feature]
 
-            values, counts = np.unique(target_values, return_counts=True)
+            _, counts = np.unique(target_values, return_counts=True)
             probabilities = counts / target_values.size
 
             non_zero_probabilities = probabilities[probabilities > 0]
@@ -157,50 +175,64 @@ class DecisionTree:
         return weighted_entropy
     
     def info_gain_categorical(self, data: pd.DataFrame, feature: str) -> float:
-        initial_entropy = self.entropy(data[f'{self.decision_feature}'])
+        initial_entropy = self.entropy(data[self.decision_feature])
 
         return initial_entropy - self.info_entropy_categorical(data, feature)
     
-    def info_gain_numerical(self, data: pd.DataFrame, feature: str, threshold: float) -> float:
-        initial_entropy = self.entropy(data[f'{self.decision_feature}'])
+    def info_gain_numerical(self, data: pd.DataFrame, feature: str, thresholds: List[float]) -> float:
+        initial_entropy = self.entropy(data[self.decision_feature])
 
-        return initial_entropy - self.info_entropy_numerical(data, feature, threshold)
-
-    def iterative_thresholder(self, data: pd.DataFrame, feature: str) -> float:
+        return initial_entropy - self.info_entropy_numerical(data, feature, thresholds)
+    
+    def iterative_thresholder_bf(self, data: pd.DataFrame, feature: str) -> List[float]:
         """
-        Attempts a 2 bin partition at every middle point value.
-        Selects split with maximal information gain.
+        Brute Force algorithm.
+        Attempts splitting data into multiple bins by choosing randomly selected split points.
+        Selects best split from random selection.
+        
+        args:
+            data: dataset for splitting
+            feature: feature to dictate entropies
+            num_thresholds: number of thresholds (bins = thresholds + 1)
         """
         # only want unique values to avoid trying the same split again
         sorted_values = data[feature].dropna().sort_values().unique()
 
-        best_threshold = 0
+        num_thresholds = self.numerical_threshold_lim
+        # catch for cases when the threshold count exceeds the data size
+        if sorted_values.size < self.numerical_threshold_lim:
+            num_thresholds = 1
+
+        best_thresholds = []
         best_info_gain = -float('inf')
 
-        for i in range(1, sorted_values.size):
-            threshold = (sorted_values[i - 1] + sorted_values[i]) / 2
-            
-            info_gain = self.info_gain_numerical(data, feature, threshold)
-            
+        # generate all possible combs of thresholds
+        for indices in combinations(range(1, sorted_values.size), num_thresholds):
+            thresholds = [(sorted_values[i - 1] + sorted_values[i]) / 2 for i in indices]
+
+            info_gain = self.info_gain_numerical(data, feature, thresholds)
+
             if info_gain > best_info_gain:
                 best_info_gain = info_gain
-                best_threshold = threshold
+                best_thresholds = thresholds
 
-        return best_threshold
-    
-    def median_thresholder(self, data: pd.DataFrame, feature: str) -> float:
+        return best_thresholds
+
+    def median_thresholder(self, data: pd.DataFrame, feature: str) -> List[float]:
         """
         Naively selects the median value of the numerical feature list as the threshold
         """
-        return data[feature].median()
+        # return as list for compatibility with iterative method
+        return [data[feature].median()]
 
-    def mean_thresholder(self, data: pd.DataFrame, feature: str) -> float:
+    def mean_thresholder(self, data: pd.DataFrame, feature: str) -> List[float]:
         """
         Naively selects the mean value of the numerical feature list as threshold
         """
-        return data[feature].mean()
+        # return as list for compatibility with iterative method
+        return [data[feature].mean()]
 
-    def id3(self, data: pd.DataFrame, k: int, thresholder: str) -> List:
+    def id3(self, data: pd.DataFrame, k: int, thresholder: str) -> tuple[int, str, list[float]|None]:
         """
         Perform Iterative Dichotomiser 3 algorithm for splitting:
             1. Start at root
@@ -208,49 +240,44 @@ class DecisionTree:
             3. Perform splitting based on maximal G
             4. Return splitting rule as encoded list to serve as node label
         """
-        best_info_gain = -float('inf')
 
         # ensures we do not partition using the decision_feature data
-        selection_features = [col for col in data.columns if col != f'{self.decision_feature}']
+        selection_features = [col for col in data.columns if col != self.decision_feature]
 
         # ensures valid k has been used
         k = min(k, len(selection_features))
 
+        best_info_gain = -float('inf')
+        splitting_feature = None
         for feature in random.sample(selection_features, k):
             if feature in self.categorical_features:
                 info_gain = self.info_gain_categorical(data, feature)
 
                 if info_gain > best_info_gain:
                     best_info_gain = info_gain
-                    splitting_feature = deque([feature])
+                    splitting_feature = (feature, None)
 
             else:
-                threshold = self.thresholder_types[thresholder](data, feature)
+                thresholds = self.thresholder_types[thresholder](data, feature)
 
-                info_gain = self.info_gain_numerical(data, feature, threshold)
+                info_gain = self.info_gain_numerical(data, feature, thresholds)
 
                 if info_gain > best_info_gain:
                     best_info_gain = info_gain
-                    splitting_feature = deque([feature, threshold])
+                    splitting_feature = (feature, thresholds)
 
-        if not splitting_feature:
+        if splitting_feature is None:
             raise ValueError('No splitting has been formed.')
 
         # detect if a numerical or categorical splitting rule has been decided
         # append custom code for quick identification of which type of feature
         # 1 : numerical
         # 0 : categorical
-        l = len(splitting_feature)
-        if l == 2:
-            splitting_feature.appendleft(1)
-        elif l == 1:
-            splitting_feature.appendleft(0)
-        else:
-            raise ValueError('Splitting feature list should not exceed length 2.')
-        
-        return splitting_feature
+        feat, thresh = splitting_feature
 
-    def _learn(self, data: pd.DataFrame, k: int, thresholder: str, min_child_nodes: int=5) -> None:
+        return (0 if thresh is None else 1, feat, thresh)
+
+    def _learn(self, data: pd.DataFrame, k: int, thresholder: str, min_child_nodes: int=5) -> TreeNode:
         """
         Learn decision tree Recursively using ID3 until stopping conditions met.
         """
@@ -261,43 +288,78 @@ class DecisionTree:
 
         # if all data belongs to same decision feature class, return a LeafNode with that label
         if data[f'{self.decision_feature}'].nunique() == 1:
-            return LeafNode(label=f"{data[f'{self.decision_feature}'].iloc[0]}")
+            return LeafNode(label=f"{data[self.decision_feature].iloc[0]}")
         
         # if data smaller than threshold child node count to allow a split
         if data.shape[0] < min_child_nodes:
-            return LeafNode(label=f"{data[f'{self.decision_feature}'].mode()[0]}")
+            return LeafNode(label=f"{data[self.decision_feature].mode()[0]}")
         
         splitting_rule = self.id3(data, k, thresholder)
+        # print(splitting_rule)
+        # print(data)
         
         # numerical splitting
         if splitting_rule[0] == 1:
             feature = splitting_rule[1]
-            threshold = splitting_rule[2]
+            thresholds = splitting_rule[2]
 
-            # randomly allocate NaN entries
+            # assert thresholds, 'Thresholds list is empty.'
+            if not thresholds:
+                return LeafNode(label=f"{data[self.decision_feature].mode()[0]}")
+
+            # in case thresholds not sorted
+            thresholds = sorted(thresholds)
+
+            # filter NaN entries to randomly allocate
             nan_mask = data[feature].isna()
-            nan_allocation = np.random.choice([True, False], size=nan_mask.sum())
+            nan_allocation = np.random.choice(range(len(thresholds) + 1), size=nan_mask.sum())
             nan_indices = nan_mask[nan_mask].index
-            nan_left_indices = nan_indices[nan_allocation]
-            nan_right_indices = nan_indices[~nan_allocation]
-            
-            left_data = data[data[feature] <= threshold]
-            right_data = data[data[feature] > threshold]
 
-            left_data = pd.concat([left_data, data.loc[nan_left_indices]])
-            right_data = pd.concat([right_data, data.loc[nan_right_indices]])
+            # create subsets based on thresholds
+            subsets = []
+            previous_threshold = None
+
+            for i, threshold in enumerate(thresholds):
+                if i == 0:
+                    subset = data[data[feature] <= threshold]
+                else:
+                    subset = data[(data[feature] > previous_threshold) & (data[feature] <= threshold)]
+
+                # add NaN values designated to this bin
+                nan_subset_indices = nan_indices[nan_allocation == i]
+                subset = pd.concat([subset, data.loc[nan_subset_indices]])
+                subsets.append(subset)
+
+                previous_threshold = threshold
+
+            # handle values > final threshold
+            final_subset = data[data[feature] > thresholds[-1]]
+            nan_subset_indices = nan_indices[nan_allocation == len(thresholds)]
+            final_subset = pd.concat([final_subset, data.loc[nan_subset_indices]])
+            subsets.append(final_subset)
 
             parent_node = FeatureNode(label=f"{feature}", feature_type='num')
 
-            # create left and right intermediate nodes
-            left_node = IntermediateNode(label=f"<={threshold}")
-            right_node = IntermediateNode(label=f">{threshold}")
+            category_nodes = []
 
-            # recur into children nodes
-            left_node.children = [self._learn(left_data, k, thresholder, min_child_nodes)]
-            right_node.children = [self._learn(right_data, k, thresholder, min_child_nodes)]
+            # create label for category node(s)
+            for i, subset in enumerate(subsets):
+                if i == 0:
+                    label = f"<= {thresholds[0]}"
+                    parseable_bound = thresholds[0]
 
-            parent_node.children = [left_node, right_node]
+                elif i == len(thresholds):
+                    label = f"> {thresholds[-1]}"
+                    parseable_bound = thresholds[-1]
+                else:
+                    label = f"> {thresholds[i-1]} & <= {thresholds[i]}"
+                    parseable_bound = thresholds[i]
+
+                category_node = IntermediateNode(label=label, parseable_bound=parseable_bound)
+                category_node.children = [self._learn(subset, k, thresholder, min_child_nodes)]
+                category_nodes.append(category_node)
+
+            parent_node.children = category_nodes
             return parent_node
 
         # categorical splitting
@@ -345,17 +407,28 @@ class DecisionTree:
 
                 # numerical splitting case
                 if current.feature_type == 'num':
-                    threshold = float(current.children[0].label.split('<=')[-1])
-                    if row[feature] <= threshold or pd.isna(row[feature]):
-                        # if datum has NaN entry in this feature, also proceed to left child
-                        current = current.children[0].children[0]
+                    thresholds = [category_node.parseable_bound for category_node in current.children[:-1]]
+
+                    feature_value = row[feature]
+
+                    if pd.isna(feature_value):
+                        # NaN values go to last child by default
+                        current = current.children[-1].children[0]
                     else:
-                        current = current.children[1].children[0]
+                        # find appropiate threshold range
+                        for i, threshold in enumerate(thresholds):
+                            if feature_value <= threshold:
+                                current = current.children[i].children[0]
+                                break
+                        else:
+                            # feature_value > all thresholds, proceed to last child node
+                            current = current.children[-1].children[0]
 
                 # categorical splitting case
                 elif current.feature_type == 'cat':
                     # check that test datum category was indeed seen in training
                     category_found = False
+                    child = None
                     for child in current.children:
                         if child.label == str(row[feature]) or (pd.isna(row[feature]) and child.label == 'NaN'):
                             current = child.children[0]
@@ -364,8 +437,8 @@ class DecisionTree:
                     
                     # if test datum has unseen category, proceed to random choice of child nodes
                     if not category_found:
-                        n = len(child.children)
-                        current = child.children[random.randint(0, n-1)]
+                        assert child is not None, 'No child node found for category.'
+                        current = random.choice(child.children)
             
             if isinstance(current, LeafNode):
                 decision_count += 1
@@ -413,7 +486,15 @@ class DecisionTree:
 
 
 class RandomForest:
-    def __init__(self, train_data: pd.DataFrame, decision_feature: str, k: int=6, tree_count: int=5):
+    def __init__(self, train_data: pd.DataFrame, decision_feature: str, k: int=6, tree_count: int=5, numerical_threshold_lim: int=1):
+        """
+        args:
+            train_data: dataset to train decision trees on
+            decision_feature: feature to learn for
+            k: number of features to sample from in id3 algo
+            tree_count: number of trees in forest (odd)
+            numerical_threshold_lim: number of numerical thresholds up to which we search for (bins = thresholds + 1)
+        """
         self.train_data = train_data
         self.decision_feature = decision_feature
 
@@ -429,7 +510,8 @@ class RandomForest:
             DecisionTree(
                 train_data=copy_data.sample(n=train_data.shape[0], replace=True).reset_index(drop=True),
                 k=k,
-                decision_feature=decision_feature
+                decision_feature=decision_feature,
+                numerical_threshold_lim=numerical_threshold_lim
             )
             for _ in range(tree_count)
         ]
