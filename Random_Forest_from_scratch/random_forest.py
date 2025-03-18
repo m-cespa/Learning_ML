@@ -131,16 +131,16 @@ def cross_validation(decision_feature: str, hyperparams: List[int], feature_samp
     return split_scores, all_scores
 
             
-selected_features = 'Survived,Pclass,Sex,Age,SibSp,Parch,Fare,Embarked'
-data = pd.read_csv('Random_Forest_from_scratch/titanic/train.csv')[selected_features.split(',')]
+# selected_features = 'Survived,Pclass,Sex,Age,SibSp,Parch,Fare,Embarked'
+data = pd.read_csv('Random_Forest_from_scratch/2013_data_totalwaste.csv')
 
 final_scores, all_scores = cross_validation(
-                                            decision_feature='Pclass', 
+                                            decision_feature='TOTAL HOUSEHOLD WASTE', 
                                             hyperparams=[3, 5, 7], 
-                                            k=5, 
+                                            k=7, 
                                             min_child_nodes=5,
-                                            feature_sample_count=7,
-                                            numerical_threshold_lim=1)
+                                            feature_sample_count=12,
+                                            numerical_threshold_lim=2)
 
 print(f"\n Scores for best forest after validation on each test fold: {final_scores}")
 

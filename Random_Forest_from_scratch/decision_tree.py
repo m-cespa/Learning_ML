@@ -52,7 +52,7 @@ class DecisionTree:
             k = random sample from K features
         """
         self.train_data = train_data
-        self.categorical_features = ['Pclass', 'Sex', 'Embarked', 'Survived']
+        self.categorical_features = ['Location']
         self.numerical_threshold_lim = numerical_threshold_lim
 
         self.thresholder_types = {
@@ -517,9 +517,9 @@ class RandomForest:
         ]
 
         # define features which need to be output as integer or string
-        self.str_outs = ['Embarked', 'Sex']
-        self.int_outs = ['Survived', 'Pclass', 'Age', 'SibSp', 'Parch']
-        self.float_outs = ['Fare']
+        self.str_outs = ['Location']
+        self.int_outs = []
+        self.float_outs = train_data.columns[1:].tolist()
 
     def learn(self, thresholder: str, min_child_nodes: int=5) -> None:
         for tree in self.forest:
