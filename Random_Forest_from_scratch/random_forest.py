@@ -162,18 +162,18 @@ def cross_validation(data: pd.DataFrame, decision_feature: str, hyperparams: Lis
 
             
 # selected_features = 'Survived,Pclass,Sex,Age,SibSp,Parch,Fare,Embarked'
-data = pd.read_csv('Random_Forest_from_scratch/denmark_waste/2013_data_totalwaste.csv').drop(['Location'], axis=1)
+data = pd.read_csv('some_csv.csv').drop(['country', 'population' , 'waste_incinerated'], axis=1)
 
 # removing All_denmark and Copenhagen outliers
-train_data = data.iloc[2:].copy()
+# train_data = data.iloc[2:].copy()
 
 final_scores, all_scores = cross_validation(
-                                            data=train_data,
-                                            decision_feature='TOTAL HOUSEHOLD WASTE', 
+                                            data=data,
+                                            decision_feature='waste_incinerated_per_capita', 
                                             hyperparams=[3, 5, 7], 
                                             k=5, 
-                                            min_child_nodes=8,
-                                            feature_sample_count=17,
+                                            min_child_nodes=10,
+                                            feature_sample_count=8,
                                             numerical_threshold_lim=1)
 
 print(f"\n Scores for best forest after validation on each test fold: {final_scores}")
