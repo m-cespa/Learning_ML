@@ -8,6 +8,7 @@ from cross_val import CrossValidation
 import pickle
 import os
 import matplotlib.pyplot as plt
+import ast
 
 def load_forest(folder: str, filename: str) -> RandomForest:
     """
@@ -43,7 +44,7 @@ def plot_cross_val_scores(all_scores: List, hyperparams: List[int]):
     plt.tight_layout()
     plt.show()
 
-def cross_validation(decision_feature: str, hyperparams: List[int], feature_sample_count: int, k: int=5, min_child_nodes: int=5, numerical_threshold_lim: int=1) -> List:
+def cross_validation(data: pd.DataFrame, decision_feature: str, hyperparams: List[int], feature_sample_count: int, k: int=5, min_child_nodes: int=5, numerical_threshold_lim: int=1) -> List:
     """
     Run k-fold cross-validation.
     
@@ -90,12 +91,29 @@ def cross_validation(decision_feature: str, hyperparams: List[int], feature_samp
             # create prediction array
             forest_prediction = forest.forest_vote(validation_data)
 
+            # print(forest_prediction)
+
             # calculate forest accuracy
             true_values = validation_data[decision_feature].values
-            correct_predictions = sum(
-                pred == true for pred, true in zip(forest_prediction, true_values)
-            )
-            accuracy = correct_predictions / len(true_values)
+            # correct_predictions = sum(
+            #     pred == true for pred, true in zip(forest_prediction, true_values)
+            # )
+            correct_predictions_validation = 0
+
+            for pred, true in zip(forest_prediction, true_values):
+                try:
+                    # Convert the string bound into a list of numbers
+                    lower, upper = ast.literal_eval(pred)  # Convert '[1000,2000]' -> [1000, 2000]
+                    
+                    # Check if true value falls within the predicted bounds
+                    if lower <= true <= upper:
+                        correct_predictions_validation += 1
+                except (ValueError, SyntaxError, TypeError):
+                    # If parsing fails, fall back to direct comparison (for categorical predictions)
+                    if pred == true:
+                        correct_predictions_validation += 1
+
+            accuracy = correct_predictions_validation / len(true_values)
 
             fold_scores.append(accuracy)
 
@@ -115,10 +133,22 @@ def cross_validation(decision_feature: str, hyperparams: List[int], feature_samp
         validated_forest_prediction = validated_forest.forest_vote(test_data)
 
         true_values = test_data[decision_feature].values
-        correct_predictions = sum(
-            pred == true for pred, true in zip(validated_forest_prediction, true_values)
-        )
-        accuracy = correct_predictions / len(true_values)
+
+        correct_predictions_testing = 0
+        # correct_predictions = sum(
+        #     pred == true for pred, true in zip(validated_forest_prediction, true_values)
+        # )
+
+        for pred, true in zip(validated_forest_prediction, true_values):
+            try:
+                lower, upper = ast.literal_eval(pred)
+                if lower <= true <= upper:
+                    correct_predictions_testing += 1
+            except (ValueError, SyntaxError, TypeError):
+                if pred == true:
+                    correct_predictions_testing += 1
+
+        accuracy = correct_predictions_testing / len(true_values)
 
         split_scores.append(float(np.round(accuracy, 3)))
 
@@ -132,15 +162,19 @@ def cross_validation(decision_feature: str, hyperparams: List[int], feature_samp
 
             
 # selected_features = 'Survived,Pclass,Sex,Age,SibSp,Parch,Fare,Embarked'
-data = pd.read_csv('Random_Forest_from_scratch/2013_data_totalwaste.csv')
+data = pd.read_csv('Random_Forest_from_scratch/denmark_waste/2013_data_totalwaste.csv').drop(['Location'], axis=1)
+
+# removing All_denmark and Copenhagen outliers
+train_data = data.iloc[2:].copy()
 
 final_scores, all_scores = cross_validation(
+                                            data=train_data,
                                             decision_feature='TOTAL HOUSEHOLD WASTE', 
                                             hyperparams=[3, 5, 7], 
-                                            k=7, 
-                                            min_child_nodes=5,
-                                            feature_sample_count=12,
-                                            numerical_threshold_lim=2)
+                                            k=5, 
+                                            min_child_nodes=8,
+                                            feature_sample_count=17,
+                                            numerical_threshold_lim=1)
 
 print(f"\n Scores for best forest after validation on each test fold: {final_scores}")
 

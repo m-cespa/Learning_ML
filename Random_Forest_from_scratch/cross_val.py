@@ -7,7 +7,8 @@ class CrossValidation:
         """
         Wrapper for k-fold cross-validation
         """
-        self.data = data
+        # shuffle the dataframe when loading
+        self.data = data.sample(frac=1, random_state=random_state).reset_index(drop=True)
         self.k = k
         self.random_state = random_state
         self.kfold = KFold(n_splits=k, shuffle=True, random_state=random_state)
@@ -21,7 +22,7 @@ class CrossValidation:
         """
         splits = []
         
-        for test_index, rest_index in self.kfold.split(self.data):
+        for rest_index, test_index in self.kfold.split(self.data):
             test_data = self.data.iloc[test_index]
             rest_data = self.data.iloc[rest_index]
             

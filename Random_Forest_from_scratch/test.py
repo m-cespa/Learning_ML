@@ -17,7 +17,7 @@ df_final.columns = df_final.columns.droplevel(1)
 for col in df_final.columns[1:]:
     df_final[col] = df_final[col].apply(lambda x: np.nan if isinstance(x, str) else x)
 
-df_final.to_csv('desired_filename.csv', index=False)
+# df_final.to_csv('desired_filename.csv', index=False)
 
 
 

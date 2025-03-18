@@ -10,15 +10,17 @@ import numpy as np
 # tree.print_tree()
 
 
-data = pd.read_csv('Random_Forest_from_scratch/2013_data_totalwaste.csv').drop(['Location'], axis=1)
+data = pd.read_csv('Random_Forest_from_scratch/denmark_waste/2013_data_totalwaste.csv').drop(['Location'], axis=1)
+
+train_data = data.iloc[4:].copy()
 
 
-tree = DecisionTree(train_data=data, decision_feature='TOTAL HOUSEHOLD WASTE', k=10, numerical_threshold_lim=2)
+tree = DecisionTree(train_data=train_data, decision_feature='TOTAL HOUSEHOLD WASTE', k=17, numerical_threshold_lim=2)
 
-tree.learn(thresholder='iter_bf', min_child_nodes=5)
+tree.learn(thresholder='median', min_child_nodes=4)
 
-tree.print_tree()
+# tree.print_tree()
 
-testing_rows = data.iloc[4:6]
+testing_rows = data.iloc[2:4]
 
 print(tree.decide(testing_rows))

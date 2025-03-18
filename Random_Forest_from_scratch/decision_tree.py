@@ -38,8 +38,10 @@ class LeafNode(TreeNode):
     """
     Terminal node which should be labelled according to the decision_feature.
     """
-    def __init__(self, label: str):
+    def __init__(self, label: str, lower_bound: float=0., upper_bound: float=0.):
         super().__init__(label=label, children=[])
+        self.lower_bound = lower_bound
+        self.upper_bound = upper_bound
 
 class DecisionTree:
     def __init__(self, train_data: pd.DataFrame, k: int, decision_feature: str, numerical_threshold_lim: int=1):
@@ -84,7 +86,7 @@ class DecisionTree:
         else:
             # numerical features: fill NaN with median of that column
             mean_value = self.train_data[self.decision_feature].median()
-            self.train_data[self.decision_feature].fillna(mean_value, inplace=True)
+            self.train_data.fillna({self.decision_feature: mean_value}, inplace=True)
 
     def entropy(self, y: pd.Series) -> float:
         """
@@ -292,7 +294,9 @@ class DecisionTree:
         
         # if data smaller than threshold child node count to allow a split
         if data.shape[0] < min_child_nodes:
-            return LeafNode(label=f"{data[self.decision_feature].mode()[0]}")
+            return LeafNode(label=f"[{data[self.decision_feature].min()},{data[self.decision_feature].max()}]",
+                            lower_bound=data[self.decision_feature].min(),
+                            upper_bound=data[self.decision_feature].max())
         
         splitting_rule = self.id3(data, k, thresholder)
         # print(splitting_rule)
@@ -517,9 +521,9 @@ class RandomForest:
         ]
 
         # define features which need to be output as integer or string
-        self.str_outs = ['Location']
+        self.str_outs = train_data.columns[1:].tolist()
         self.int_outs = []
-        self.float_outs = train_data.columns[1:].tolist()
+        self.float_outs = []
 
     def learn(self, thresholder: str, min_child_nodes: int=5) -> None:
         for tree in self.forest:
