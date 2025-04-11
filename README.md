@@ -15,3 +15,6 @@ __Projects:__
    with respect to model inputs (Jacobian & diagonal Hessian) to construct differential Physics Loss functions. Finite difference methods for approximating the model
    derivatives are also supported (used in testing to validate the manual autograd propagation). Currently implementing batch normalisation layers to help regularisation
    problems to do with vanishing/diverging network gradients.
+
+4. PyTorch projects:
+   Folder containing various early PyTorch projects, primarily syntax learning.
