@@ -1,4 +1,4 @@
-from model import Layer, ActivationLayer, Network, ReLU, Sigmoid, ELU, Linear, Tanh, Adam, SGD, GD, Lion
+from archived_models.pinn_gen_1 import Layer, ActivationLayer, Network, ReLU, Sigmoid, ELU, Linear, Tanh, Adam, SGD, GD, Lion
 import numpy as np
 from typing import List, Callable, Tuple
 import matplotlib.pyplot as plt
@@ -67,7 +67,7 @@ def generate_trig_data(num_pairs: int, batch_dim: int, input_size: int,
 
 if __name__ == "__main__":
     # Define the input, output sizes, batch dimensions
-    batch_dim = 5
+    batch_dim = 4
     input_size = 1
     output_size = 1
 
@@ -109,27 +109,9 @@ if __name__ == "__main__":
     print(f"Shape of input tensor: {learn_data[0][0].shape}")  # Should be (batch_dim, channel_dim, input_size)
 
     # print(network.layers[0].A.shape)
-    # test datum to probe Jacobian and Hessian
-    learn_data.append((np.array([[1]]), np.array([[0.84147]])))
-    
-    network.learn(learn_data=learn_data, lr=0.001, epochs=20, loss_func='mse', physics_loss=False, plot=False, store_grads=True)
 
-    for layer in network.layers:
-        if isinstance(layer, Layer):
-            if hasattr(layer, 'g'):
-                print(f"{layer} has g: {layer.g.shape}")
-
-    network.autograd()
-    network.autograd_derivs()
-
-    print(network.J)
-    print(network.H)
-
-    # print(f"\n{network.complex_step_derivative(1)}")
-    # print(f"\n{network.forward(np.array([1]))}")
-    # print(f"\n{network.numerical_first_derivative(np.array([1]))}")
-    # print(f"\n{network.numerical_second_derivative(np.atleast_2d(1))}")
-
+    # Train the network with the training data
+    network.learn(learn_data=learn_data, lr=0.001, epochs=50, loss_func='mse', physics_loss=False, plot=True)
 
     # times = []
     # for _ in range(5):
