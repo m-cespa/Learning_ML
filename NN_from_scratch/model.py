@@ -2,6 +2,7 @@ from typing import List, Callable, Tuple
 import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import sys
 
 class Linear:
     def __call__(self, x: np.ndarray) -> np.ndarray:
@@ -181,7 +182,7 @@ class Layer(BaseLayer):
 
         return weights_tensor, biases_tensor
     
-    def forward(self, input_data: np.ndarray=None) -> None:
+    def forward(self, input_data: np.ndarray=None, store_grads: bool=True) -> None:
         """
         Take activation vector a^{l-1}j from previous layer (should be an ActivationLayer)
         Perform z^{l}_i = w^{l}_ij a^{l-1}_j + b_i
@@ -202,8 +203,15 @@ class Layer(BaseLayer):
 
         # assert z.shape == (self.batch_dim, self.size)
         self.z = z
+        self.activation_deriv = self.next.derivative(self.z)
 
-    def backward(self, error: np.ndarray, store_grads: bool=False) -> np.ndarray:
+        # calculate Jacobian for autograd, don't take mean over batch dimension
+        # batch dimension left for Hessian calculation for 2nd order derivatives
+        if store_grads:
+            self.activation_second_deriv = self.next.second_deriv(self.z)
+            self.g = np.einsum('bj, jk -> bjk', self.activation_deriv, self.W)
+
+    def backward(self, error: np.ndarray) -> np.ndarray:
         """
         Layer passes backwards its error vector D^{l}_j = D^{l+1}_j * [w^{l+1}_jk * A'(z^{l}_k)]
 
@@ -234,11 +242,6 @@ class Layer(BaseLayer):
         if self.previous is None:
             raise ValueError('No previous layer to pass error to.')
         
-        # calculate Jacobian for autograd, don't take mean over batch dimension
-        # batch dimension left for Hessian calculation for 2nd order derivatives
-        if store_grads:
-            self.g = np.einsum('bj, jk -> bjk', self.activation_deriv, self.W)
-
         # next layer should be Activation if we are mid-stream
         current = self.next
 
@@ -278,7 +281,7 @@ class ActivationLayer(BaseLayer):
         super().__init__()
         self.activation_function = activation_function
 
-    def forward(self):
+    def forward(self, store_grads=True):
         if self.previous:
             self.A = self.activation_function(self.previous.z)
 
@@ -291,7 +294,7 @@ class ActivationLayer(BaseLayer):
     def third_deriv(self, x: np.ndarray) -> np.ndarray:
         return getattr(self.activation_function, "third_deriv", lambda x: np.zeros_like(x))(x)
 
-    def backward(self, error: np.ndarray, store_grads: bool=False) -> np.ndarray:
+    def backward(self, error: np.ndarray) -> np.ndarray:
         """
         D^{l}_j = D^{l+1}_j * [w^{l+1}_jk * A'(z^{l}_k)]
 
@@ -301,16 +304,9 @@ class ActivationLayer(BaseLayer):
         if self.previous is None:
             raise ValueError('No previous layer to pass error to.')
         
-        # we call the previous layer's "pre-activation" z
-        deriv = self.derivative(self.previous.z)
-
-        if store_grads:
-            second_deriv = self.second_deriv(self.previous.z)
-            self.previous.activation_second_deriv = second_deriv
-        
-        # previous layer to activation is always a Layer object
-        # set the deriv attribute to the correct value
-        self.previous.activation_deriv = deriv
+        # # we call the previous layer's "pre-activation" z
+        # deriv = self.derivative(self.previous.z)
+        # self.previous.activation_deriv = deriv
 
         return error
     
@@ -498,7 +494,7 @@ class Network:
             if isinstance(layer, Layer):
                 layer.assign_previous_layer(self.layers[i-1])
 
-    def forward(self, input_data: np.ndarray) -> np.ndarray:
+    def forward(self, input_data: np.ndarray, store_grads=True) -> np.ndarray:
         """
         Args:
             input_data shape: (batch_dim, input_layer.size)
@@ -508,7 +504,7 @@ class Network:
         self.layers[0].z = input_data
 
         for layer in self.layers[1:]:
-            layer.forward()
+            layer.forward(store_grads=store_grads)
         return self.layers[-1].A
     
     def MSELoss(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -517,62 +513,7 @@ class Network:
     def CELoss(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         x = np.clip(x, 1e-15, 1 - 1e-15)
         return -np.sum(y * np.log(x), axis=-1)
-    
-    def complex_step_derivative(self, x, h=1e-20):
-        # Evaluate the function at x + i*h
-        f_complex = self.forward(x + 1j * h)
-        # Extract the imaginary part and divide by h
-        return np.imag(f_complex) / h
-    
-    def numerical_first_derivative(self, x: np.ndarray, h=1e-5) -> np.ndarray:
-        """
-        Compute the first derivative of the model outputs with respect to x
-        using the five-point central difference method.
-
-        x: Input array of shape (B, input_dim)
-        Returns: Approximate derivative, shape (B, output_dim)
-        """
-        # Create perturbed inputs along each coordinate using broadcasting.
-        # For simplicity, assume that we'll approximate the derivative with respect to one scalar variable.
-        # If you have multi-dimensional x, you'll need to apply this per-dimension.
-        X_minus2 = x - 2*h
-        X_minus1 = x - h
-        X_plus1 = x + h
-        X_plus2 = x + 2*h
-        
-        # Evaluate forward pass for each perturbed input.
-        y_minus2 = self.forward(X_minus2)  # shape (B, output_dim)
-        y_minus1 = self.forward(X_minus1)
-        y         = self.forward(x)
-        y_plus1  = self.forward(X_plus1)
-        y_plus2  = self.forward(X_plus2)
-        
-        # Compute first derivative by five-point formula
-        dfdx = (-y_plus2 + 8*y_plus1 - 8*y_minus1 + y_minus2) / (12*h)
-        return dfdx
-
-    def numerical_second_derivative(self, x: np.ndarray, h=1e-5) -> np.ndarray:
-        """
-        Compute the second derivative of the model outputs with respect to x
-        using the five-point central difference method.
-        
-        x: Input array of shape (B, input_dim)
-        Returns: Approximate second derivative, shape (B, output_dim)
-        """
-        X_minus2 = x - 2*h
-        X_minus1 = x - h
-        X_plus1  = x + h
-        X_plus2  = x + 2*h
-        
-        y_minus2 = self.forward(X_minus2)
-        y_minus1 = self.forward(X_minus1)
-        y         = self.forward(x)
-        y_plus1  = self.forward(X_plus1)
-        y_plus2  = self.forward(X_plus2)
-        
-        d2fdx2 = (-y_plus2 + 16*y_plus1 - 30*y + 16*y_minus1 - y_minus2) / (12*h**2)
-        return d2fdx2
-    
+            
     def numerical_physics_loss(self, x: np.ndarray, h=1e-5) -> List[np.ndarray]:
         """
         Physics-informed loss enforcing d²y/dx² + y = 0
@@ -610,7 +551,7 @@ class Network:
         overall_H = np.zeros_like(overall_J)
 
         for layer in self.layers:
-            if isinstance(layer, Layer) and hasattr(layer, 'J'):
+            if isinstance(layer, Layer) and hasattr(layer, 'g'):
                 g_l = layer.g   # shape (batch, out_dim, in_dim)
                 W = layer.W     # shape (out_dim, in_dim)
 
@@ -634,8 +575,8 @@ class Network:
         # average over batch dimension
         self.J_batch = overall_J
         self.H_batch = overall_H
-        self.J = np.mean(overall_J, axis=0)
-        self.H = np.mean(overall_H, axis=0)
+        # self.J = np.mean(overall_J, axis=0)
+        # self.H = np.mean(overall_H, axis=0)
 
     def autograd_derivs(self) -> None:
         """
@@ -644,51 +585,57 @@ class Network:
 
         NOTE: mathematical derivations in accompanying pdf
         """
-        # Retrieve the batch-level overall_J and overall_H at the final layer.
-        # Their shapes:
-        #    overall_J_batch: (batch, out_dim, input_dim)
-        #    overall_H_batch: (batch, out_dim, input_dim)
-        # We also need the final layer's activation derivatives.
         final_layer = self.layers[-1]
         final_z = self.layers[-2].z
 
-        A_prime = final_layer.derivative(final_z)        # shape (batch, out_dim)
-        A_double = final_layer.second_deriv(final_z)   # shape (batch, out_dim)
-        A_third = final_layer.third_deriv(final_z)     # shape (batch, out_dim)
+        A_prime = final_layer.derivative(final_z)       # shape (batch, out_dim)
+        A_double = final_layer.second_deriv(final_z)    # shape (batch, out_dim)
+        A_third = final_layer.third_deriv(final_z)      # shape (batch, out_dim)
 
-        # Expand dims to allow elementwise operations on the last two axes.
+        # expand dims to allow elementwise operations on last two axes
         A_prime_exp   = A_prime[:, :, None]    # (batch, out_dim, 1)
         A_double_exp  = A_double[:, :, None]   # (batch, out_dim, 1)
         A_third_exp   = A_third[:, :, None]    # (batch, out_dim, 1)
 
-        # Compute the directional derivative for the final layer:
-        # overall_J_batch = A_prime ⊙ directional_deriv, so:
+        # overall_J_batch = A_prime ⊙ directional_deriv
         directional_deriv = self.J_batch / A_prime_exp
 
-        # Recover the propagated Hessian from the final layer update:
         # overall_H_batch = A_double ⊙ (directional_deriv)^2 + A_prime ⊙ propagated_H
-        # Therefore, computed per batch:
         propagated_H = (self.H_batch - A_double_exp * directional_deriv**2) / A_prime_exp
 
-        # Derivative of the Jacobian with respect to output activation:
         # dJ/da^L = (A_double/(A_prime^2)) ⊙ overall_J_batch.
         dJ_da_batch = (A_double_exp / (A_prime_exp**2)) * self.J_batch
 
-        # Derivative of the Hessian with respect to output activation:
-        # dH/da^L = (A_third/(A_prime^3)) ⊙ (overall_J_batch^2) + (A_double/A_prime) ⊙ propagated_H.
+        # dH/da^L = (A_third/(A_prime^3)) ⊙ (overall_J_batch^2) + (A_double/A_prime) ⊙ propagated_H
         dH_da_batch = (A_third_exp / (A_prime_exp**3)) * (self.J_batch**2) \
                     + (A_double_exp / A_prime_exp) * propagated_H
 
-        # Average the derivatives over the batch so that they correspond 
-        # to the averaged network quantities.
-        self.dJ_da = np.mean(dJ_da_batch, axis=0)   # shape: (out_dim, input_dim)
-        self.dH_da = np.mean(dH_da_batch, axis=0)   # shape: (out_dim, input_dim)
+        self.dJ_da = dJ_da_batch   # shape: (batch_dim, out_dim, input_dim)
+        self.dH_da = dH_da_batch   # shape: (batch_dim, out_dim, input_dim)
 
-        # Note: because of the chain rule structure the derivatives only affect 
-        # the output component corresponding to each unit (i.e., the equivalent of
-        # a Kronecker delta factor in the analytic expressions).
+    def physics_loss(self, y) -> List[np.ndarray]:
+        self.autograd()
+        self.autograd_derivs()
 
-    def backward_helper(self, error: np.ndarray, store_grads: bool=False) -> None:
+        # print(self.H_batch.shape)
+        # print(self.J_batch.shape)
+        # print(y.shape)
+        # print(self.dH_da.shape)
+        # print(self.dJ_da.shape)
+        # sys.exit("Stopping the program")
+
+        y = np.squeeze(y)
+        loss = (np.squeeze(self.H_batch) + y) ** 2
+        grad_loss = 2 * (np.squeeze(self.H_batch) + y) * (np.squeeze(self.dH_da) + 1)
+
+        # print(f"grad_loss shape: {grad_loss.shape}")
+        # print(f"loss shape: {loss.shape}")
+
+        # sys.exit("stopping")
+        
+        return loss, grad_loss
+
+    def backward_helper(self, error: np.ndarray) -> None:
         """
         Helper function for the network backpropagation.
         Accumulates parameter gradients.
@@ -697,7 +644,7 @@ class Network:
 
         # Back-propagate errors
         for layer in self.layers[-1:0:-1]:
-            current_error = layer.backward(current_error, store_grads)
+            current_error = layer.backward(current_error)
 
         # calculate parameter gradients (averaged over batch dimension, IF there is batch_training)
         batch_dim = error.shape[0] if self.batch_training else 1
@@ -713,7 +660,9 @@ class Network:
 
                 dW = np.einsum('bi, bj -> ij', layer.delta, layer.previous.A) / (batch_dim)
                 layer.W_grad.append(dW)
-            
+        #         print(f"layer with size: {layer.size} given dW shape: {dW.shape}")
+                
+        # sys.exit('stop')
     def backward(self, data: np.ndarray, label: np.ndarray, lr: float, loss_func: str, physics_loss: bool=True, store_grads: bool=False) -> np.ndarray:
         """
         Perform one backwards pass.
@@ -726,7 +675,8 @@ class Network:
             physics_loss: introduce additive term into Loss to enforce physical constraints
             store_grads: calculates jacobians for layers when performing backwards pass
         """
-        forward_out = self.forward(data)
+        # Jacobians computed in forward pass
+        forward_out = self.forward(data, store_grads)
 
         assert forward_out.shape == label.shape
 
@@ -735,28 +685,42 @@ class Network:
         
         loss = self.loss_functions[loss_func](forward_out, label)
 
+        # print(f"MSE loss shape: {loss.shape}")
+
         if physics_loss:
-            # perform "3-way backpropagation" due to finite-difference derivative
-            # then average the accumulated parameter gradients
-            Lp, grad_y, grad_y_plus, grad_y_minus = self.physics_loss(data)
+            Lp, grad_loss = self.physics_loss(y=forward_out)
+            grad_loss = grad_loss.reshape(-1, 1)
+
+            # # perform "3-way backpropagation" due to finite-difference derivative
+            # # then average the accumulated parameter gradients
+            # Lp, grad_y, grad_y_plus, grad_y_minus = self.physics_loss(data)
             loss += self.physics_loss_weight * Lp
 
-            error_y = (forward_out - label) + self.physics_loss_weight * grad_y
+            # print(f"grad_loss shape: {grad_loss.shape}")
+            # print(f"label shape: {label.shape}")
+            # print(f"weight shape: {"it's a goddamn float" if isinstance(self.physics_loss_weight, float) else self.physics_loss_weight.shape}")
+            # print(f"forward_out shape: {forward_out.shape}")
+            mse_error = forward_out - label
 
-            # self.backward_helper(error_y)
-            # errors for y+- evaluated using only the physics loss (we don't have a label)
-            error_y_plus = self.physics_loss_weight * grad_y_plus
-            # self.backward_helper(error_y_plus)
+            # print(f"mse_error shape: {mse_error.shape}")
+            error = mse_error + (self.physics_loss_weight * grad_loss)
 
-            error_y_minus = self.physics_loss_weight * grad_y_minus
-            # self.backward_helper(error_y_minus)
+            # print(f"error shape: {error.shape}")
 
-            concatenated_error = np.concatenate([error_y, error_y_plus, error_y_minus], axis=0)
-            self.backward_helper(concatenated_error, store_grads)
+            # # self.backward_helper(error_y)
+            # # errors for y+- evaluated using only the physics loss (we don't have a label)
+            # error_y_plus = self.physics_loss_weight * grad_y_plus
+            # # self.backward_helper(error_y_plus)
+
+            # error_y_minus = self.physics_loss_weight * grad_y_minus
+            # # self.backward_helper(error_y_minus)
+
+            # concatenated_error = np.concatenate([error_y, error_y_plus, error_y_minus], axis=0)
+            self.backward_helper(error)
 
         else:
             error = forward_out - label
-            self.backward_helper(error, store_grads)
+            self.backward_helper(error)
 
         # assert loss.shape == (self.batch_dim,)
 
@@ -831,39 +795,6 @@ class Network:
             plt.title('Training Loss Over Epochs')
             plt.legend()
             plt.show()
-
-    def interactive_inference(self) -> None:
-        """
-        Opens an interactive terminal window where the user inputs values,
-        and the trained model predicts the output, even if the batch dimension is different.
-        """
-        print("\nInteractive Mode: Enter input values separated by spaces.")
-        print("Type 'exit' to quit.\n")
-
-        input_size = self.layers[0].size  # Input layer size
-        batch_dim = self.batch_dim  # Trained batch size
-
-        while True:
-            user_input = input(f"Enter {input_size} values: ")
-            if user_input.lower() == "exit":
-                print("Exiting interactive mode.")
-                break
-
-            try:
-                input_values = np.array([float(x) for x in user_input.split()])
-            except ValueError:
-                print("Invalid input! Please enter numerical values only.")
-                continue
-
-            if input_values.size != input_size:
-                print(f"Expected {input_size} values, but got {input_values.size}. Try again.")
-                continue
-
-            # Expand to match the batch size (zero-shot inference handling)
-            input_values = np.tile(input_values, [batch_dim, 1])
-
-            output = np.mean(self.forward(input_values), axis=0)
-            print(f"Model Output (across batches): {output}")
 
     def save_parameters(self, file_path: str) -> None:
         """

@@ -67,7 +67,7 @@ def generate_trig_data(num_pairs: int, batch_dim: int, input_size: int,
 
 if __name__ == "__main__":
     # Define the input, output sizes, batch dimensions
-    batch_dim = 5
+    batch_dim = 10
     input_size = 1
     output_size = 1
 
@@ -99,7 +99,7 @@ if __name__ == "__main__":
 
     # Generate XOR training data with batch and channel dimensions
     learn_data = generate_trig_data(
-        num_pairs=500,
+        num_pairs=200,
         batch_dim=batch_dim,
         input_size=input_size,
     )
@@ -110,20 +110,23 @@ if __name__ == "__main__":
 
     # print(network.layers[0].A.shape)
     # test datum to probe Jacobian and Hessian
-    learn_data.append((np.array([[1]]), np.array([[0.84147]])))
+    # learn_data.append((np.array([[1]]), np.array([[0.84147]])))
     
-    network.learn(learn_data=learn_data, lr=0.001, epochs=20, loss_func='mse', physics_loss=False, plot=False, store_grads=True)
+    network.learn(learn_data=learn_data, lr=0.001, epochs=50, loss_func='mse', physics_loss=True, plot=True, store_grads=True)
 
     for layer in network.layers:
         if isinstance(layer, Layer):
             if hasattr(layer, 'g'):
                 print(f"{layer} has g: {layer.g.shape}")
 
-    network.autograd()
-    network.autograd_derivs()
+    # print(network.layers[0].z.shape)
+    # network.autograd()
+    # network.autograd_derivs()
 
-    print(network.J)
-    print(network.H)
+    # print(network.J)
+    # print(network.H)
+    # print(network.dJ_da)
+    # print(network.dH_da)
 
     # print(f"\n{network.complex_step_derivative(1)}")
     # print(f"\n{network.forward(np.array([1]))}")
