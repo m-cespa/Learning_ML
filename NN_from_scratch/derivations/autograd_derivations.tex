@@ -1,0 +1,110 @@
+\documentclass{article}
+\usepackage{amsmath, amssymb}
+\usepackage[margin=1.2in]{geometry}
+
+\begin{document}
+
+\section*{Notation Glossary:}
+\begin{tabular}{ll}
+\(z_j^l\) & Pre-Activation of $j^{\text{th}}$ neuron in the $l^{\text{th}}$ layer \\[0.5em]
+\(a_j^l\) & (Post)-Activation of $j^{\text{th}}$ neuron in the $l^{\text{th}}$ layer \\[0.5em]
+\(x_k\) & Input ($0^{\text{th}}$) layer activations \\[0.5em]
+$A()$ & General element-wise activation function \\[0.5em]
+\(w_{jk}^l\) & Weight matrix of $l^{\text{th}}$ layer \\[0.5em]
+\(b_j^l\) & Bias vector of $l^{\text{th}}$ layer \\[0.5em]
+\(g_{jk}^l\) & Jacobian between layer \(l\) and \(l-1\) \\[0.5em]
+\(J_{jk}^l\) & Jacobian between input ($0^{\text{th}}$) layer and layer \(l\) \\[0.5em]
+\(H_{jk}^l\) & Diagonal Hessian between input ($0^{\text{th}}$) layer and layer \(l\) \\[0.5em]
+\(\odot\) & Direct product over repeated index rather than summation \\[0.5em]
+\end{tabular}
+
+\section*{Network Jacobian:}
+In following derivations assume Einstein index convention and the standard feed forward relationships:
+\begin{align}
+a_j^l &= A(z_j^l) \\
+z_j^l &= w_{jk}^la_k^{l-1} + b_j^l
+\end{align}
+
+Note that the network's output corresponds to the \(L^{th}\) layer activations \(a_j^L\). Begin by considering the layer to layer Jacobian:
+\begin{align}
+\frac{\partial a_j^l}{\partial a_k^{l-1}} &= \frac{\partial a_j^l}{\partial z_q^l} \frac{\partial z_q^l}{\partial a_k^{l-1}} \\
+&= \frac{\partial a_j^l}{\partial z_q^l} w_{qk}^l \\
+g_{jk}^l &= A'(z_j^l) \odot w_{jk}^l
+\end{align}
+
+Going 1 more layer back:
+\begin{align}
+\frac{\partial a_j^l}{\partial a_k^{l-2}} &= A'(z_j^l) \odot w_{jq}^l A'(z_q^{l-1}) \odot w_{qk}^{l-1} \\
+&= g_{jq}^l g_{qk}^{l-1}
+\end{align}
+
+This relationship can be recurred to obtain:
+\begin{equation}
+J_{jk}^{l} \equiv \frac{\partial a_j^l}{\partial x_k} = g_{j\alpha}^l g_{a\beta}^{l-1} ... g_{\mu k}^{1}
+\end{equation}
+
+\section*{Network Hessian:}
+The general layer-to-layer Hessian can be expressed as:
+\begin{equation}
+H_{jkm}^l \equiv \frac{\partial^2 a_j^l}{\partial a_m^{l-1} \partial a_k^{l-1}} = \frac{\partial J_{jk}^l}{\partial a_m^{l-1}}
+\end{equation}
+
+The full Hessian is computationally expensive to obtain and often we will only need its diagonal terms which will retrieve the network's estimates for commonly occurring physical differential terms such as: \(\frac{d^2u}{dx^2} \ \text{for some} \ u(t, x)\). Henceforth let:
+\begin{equation}
+\delta_{mk}H_{jkm}^l \equiv H_{jk}^l
+\end{equation}
+
+We can also note the useful base cases:
+\begin{align}
+J_{jk}^1 &= \delta_{jk} \\
+H_{jk}^1 &= 0
+\end{align}
+
+To derive the diagonal Hessian we consider a recursive method and start from:
+\begin{equation}
+J_{jk}^l \equiv g_{jm}^l J_{mk}^{l-1} = A'(z_j^l) \odot w_{jm}^l J_{mk}^{l-1}
+\end{equation}
+
+Considering the Hessian as the derivative of the Jacobian:
+\begin{align}
+H_{jk}^l &= \frac{\partial}{\partial x_k} \left[ A'(z_j^l) \odot w_{jm}^l J_{mk}^{l-1} \right] \\
+&= A''(z_j^l) \odot \frac{\partial z_j^l}{\partial x_k} \odot w_{jm}^l J_{mk}^{l-1} + A'(z_j^l) \odot w_{jm}^l \frac{\partial J_{mk}^{l-1}}{\partial x_k}
+\end{align}
+
+We can recover several familiar terms from this expression, starting with
+\begin{align}
+\frac{\partial J_{mk}^{l-1}}{\partial x_k} &\equiv H_{mk}^{l-1},
+\end{align}
+\indent and likewise, simplifying the first term:
+\begin{align}
+\frac{\partial z_j^l}{\partial x_k} 
+&= \frac{\partial}{\partial x_k} \left[ w_{jq}^l a_q^{l-1} + b_j^l \right]
+= w_{jq}^l \frac{\partial a_q^{l-1}}{\partial x_k}
+= w_{jq}^l J_{qk}^{l-1}.
+\end{align}
+
+Putting these expressions together we yield a recursion relation for the diagonal Hessian:
+\begin{equation}
+H_{jk}^l = A''(z_j^l) \odot \left[ w_{jm}^l J_{mk}^{l-1} \right]^2 + A'(z_j^l) \odot w_{jm}^l H_{mk}^{l-1}
+\end{equation}
+
+
+\section*{Jacobian and Hessian Loss Derivatives:}
+If we construct a Physics Loss using Jacobian and/or Hessian terms, we will need to propagate the according loss derivative through the network (standard backpropagation). This will require: \(\frac{\partial J_{jk}^L}{\partial a_m^L}\) and \(\frac{\partial H_{jk}^L}{\partial a_m^L}\). We begin with the simpler Jacobian. We use the form \(A'(z_j^l) \odot w_{jm}^l J_{mk}^{l-1}\) which brings all the \(a_j^L\) dependence into the activation function term.
+
+\begin{align}
+\frac{\partial J_{jk}^L}{\partial a_m^L} &= \frac{\partial}{\partial a_m^L} \left[ A'(z_j^L) \odot w_{jq}^L J_{qk}^{L-1} \right] \\
+&= \delta_{jm} A''(z_j^L) \odot \frac{\partial z_j^L}{\partial a_m^L} w_{jq}^L J_{qk}^{L-1} \\
+&= \delta_{jm} \frac{A''(z_j^L)}{A'(z_j^L)} \odot \left[w_{jq}^L J_{qk}^{L-1} \right] \\
+&= \delta_{jm} \frac{A''(z_j^L)}{[A'(z_j^L)]^2} \odot J_{jk}^L
+\end{align}
+(The \(\delta_{jm}\) has been left for completeness to demonstrate the \(j=m\) requirement) \\
+
+The derivation for the Hessian follows much of the same logic and yields:
+\begin{align}
+\frac{\partial H_{jk}^L}{\partial a_m^L} &= \delta_{jm} \left[ \frac{A'''(z_j^L)}{A'(z_j^L)} \odot \left[w_{jq}^L J_{qk}^{L-1} \right]^2 + \frac{A''(z_j^L)}{A'(z_j^L)} \odot w_{jq}^L H_{qk}^{L-1} \right] \\
+&= \delta_{jm} \left[ \frac{A'''(z_j^L)}{[A'(z_j^L)]^3} \odot (J_{jk}^L)^2 + \frac{A''(z_j^L)}{A'(z_j^L)} \odot w_{jq}^L H_{qk}^{L-1} \right]
+\end{align}
+
+
+\end{document}

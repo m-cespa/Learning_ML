@@ -31,157 +31,263 @@ def generate_xor_data(num_pairs, batch_dim, input_size, output_size):
     
     return learn_data
 
-def generate_trig_data(num_pairs: int, batch_dim: int, input_size: int, 
-                       func: Callable[[np.ndarray], np.ndarray]=None) -> list:
-    """
-    Generate training data for a trigonometric function.
-    Returns:
-        list: List of (input_tensor, label_tensor) tuples.
-    """
-    domain = tuple((0, 2*np.pi) for _ in range(input_size))
 
+def generate_trig_data(total_samples: int, batch_dim: int, input_size: int,
+                         func: Callable[[np.ndarray], np.ndarray] = None
+                        ) -> List[Tuple[np.ndarray, np.ndarray]]:
+    num_batches = total_samples // batch_dim  # e.g. 200/5 = 40 mini-batches.
+    # Manually defined training domain: [0, 2*pi] for each input dimension.
+    domain = [(0, 2 * np.pi) for _ in range(input_size)]
+    
+    # Set default function if none provided.
     if func is None:
         if input_size == 1:
-            func = lambda x: np.array([np.sin(x[0])])
+            func = lambda x: np.exp(-x[0])*np.sin(3*x[0])
         elif input_size == 2:
-            func = lambda x: np.array([np.sin(x[0]) * np.sin(x[1])])
+            func = lambda x: 6*np.sin(np.pi*x[0]/5.)*np.exp(-x[1]*(np.pi/5.)**2)
         else:
             raise ValueError("No default function defined for input_size > 2. Please provide a function.")
-
-    learn_data = []
-    for _ in range(num_pairs):
+    
+    batches = []
+    for _ in range(num_batches):
+        # Create empty tensors for the batch.
         input_tensor = np.zeros((batch_dim, input_size))
-        label_tensor = np.zeros((batch_dim, 1))  # Assuming 1D output
-
+        label_tensor = np.zeros((batch_dim, 1))  # 1D output per sample.
         for i in range(batch_dim):
-            x_i = np.array([np.random.uniform(*domain[j]) for j in range(input_size)])
+            # Generate one sample by drawing uniformly from each domain interval.
+            x_i = np.array([np.random.uniform(low, high) for (low, high) in domain])
+            y_i = func(x_i)  # Compute label from provided function.
+            input_tensor[i] = x_i
+            label_tensor[i] = y_i  # Even if y_i is scalar, shape (1,) becomes (1,).
+        batches.append((input_tensor, label_tensor))
+    
+    return batches
+
+def generate_heat_eq_data(total_samples: int, batch_dim: int, k: float, L: float):
+    num_batches = total_samples // batch_dim  # e.g. 200/5 = 40 mini-batches.
+    T = 2 / (k*(np.pi / L)**2)  # Define T: the maximum time for training. Adjust as needed.
+    
+    # Training domain: for each input dimension we define a range.
+    # x in [0, L] and t in [0, T]
+    domain = [(0, L), (0, T)]
+    
+    # Define the target function for the heat equation.
+    # Note: x is a 1D array with two elements: [x, t]
+    func = lambda x: 6 * np.sin(np.pi * x[0] / L) * np.exp(-x[1] * (k * np.pi / L)**2)
+    
+    batches = []
+    for _ in range(num_batches):
+        # Create empty tensors for a mini-batch.
+        input_tensor = np.zeros((batch_dim, 2))
+        label_tensor = np.zeros((batch_dim, 1))
+        for i in range(batch_dim):
+            # Generate one sample by sampling uniformly from the domain intervals.
+            x_i = np.array([np.random.uniform(low, high) for (low, high) in domain])
             y_i = func(x_i)
             input_tensor[i] = x_i
-            label_tensor[i] = y_i
+            label_tensor[i] = y_i  # y_i is a scalar, stored as (1,)
+        batches.append((input_tensor, label_tensor))
+    
+    return batches
 
-        learn_data.append((input_tensor, label_tensor))
+def generate_collocation_data(N: int, k: float, L: float) -> np.ndarray:
+    T = 2 / (k * (np.pi / L)**2)  # Max time
+    
+    # Compute minimal grid resolution to get at least N points
+    grid_size = int(np.ceil(np.sqrt(N)))
+    while grid_size**2 < N:
+        grid_size += 1
 
-    return learn_data
+    # Build denser grid
+    x_vals = np.linspace(0, L, grid_size)
+    t_vals = np.linspace(0, T, grid_size)
+    X, T_ = np.meshgrid(x_vals, t_vals)
+    grid_points = np.stack([X.flatten(), T_.flatten()], axis=1)
 
+    # Randomly sample exactly N points without replacement
+    indices = np.random.choice(len(grid_points), size=N, replace=False)
+    collocation_inputs = grid_points[indices]
+
+    return [k, L, collocation_inputs]
 
 
 if __name__ == "__main__":
     # Define the input, output sizes, batch dimensions
-    batch_dim = 10
-    input_size = 1
+    batch_dim = 5
+    input_size = 2
     output_size = 1
 
     # Define the layers with batch dimension support
     input_layer = Layer(size=input_size)
-    activation1 = ActivationLayer(Linear())
+    input_activation = ActivationLayer(Linear())
     hidden_layer_1 = Layer(size=4)
+    activation1 = ActivationLayer(ELU())
+    hidden_layer_2 = Layer(size=16)
     activation2 = ActivationLayer(ELU())
-    hidden_layer_3 = Layer(size=8)
-    activation4 = ActivationLayer(ELU())
+    hidden_layer_3 = Layer(size=16)
+    activation3 = ActivationLayer(ELU())
     hidden_layer_4 = Layer(size=8)
-    activation5 = ActivationLayer(ELU())
+    activation4 = ActivationLayer(ELU())
     output_layer = Layer(size=output_size)
-    output_activation = ActivationLayer(Tanh())
+    output_activation = ActivationLayer(ELU())
 
     # Link layers sequentially
     network = Network(layers=[input_layer,
-                       activation1,
+                       input_activation,
                        hidden_layer_1,
+                       activation1,
+                       hidden_layer_2,
                        activation2,
-                       hidden_layer_3,
-                       activation4,
+                    #    hidden_layer_3,
+                    #    activation3,
                        hidden_layer_4,
-                       activation5,
+                       activation4,
                        output_layer,
                        output_activation],
                        physics_loss_weight=0.001,
                        optim=Adam())
 
     # Generate XOR training data with batch and channel dimensions
-    learn_data = generate_trig_data(
-        num_pairs=200,
+    learn_data = generate_heat_eq_data(
+        total_samples=500,
         batch_dim=batch_dim,
-        input_size=input_size,
+        k=5.,
+        L=10.
     )
 
+    collocation_data = generate_collocation_data(N=100, k=5., L=10.)
+
     # Print shapes of the first label and input tensors to verify correctness
-    print(f"Shape of label tensor: {learn_data[0][1].shape}")  # Should be (batch_dim, channel_dim, output_size)
-    print(f"Shape of input tensor: {learn_data[0][0].shape}")  # Should be (batch_dim, channel_dim, input_size)
+    print(f"Shape of label tensor: {learn_data[0][1].shape}")  # Should be (batch_dim, output_size)
+    print(f"Shape of input tensor: {learn_data[0][0].shape}")  # Should be (batch_dim, input_size)
 
     # print(network.layers[0].A.shape)
     # test datum to probe Jacobian and Hessian
     # learn_data.append((np.array([[1]]), np.array([[0.84147]])))
     
-    network.learn(learn_data=learn_data, lr=0.001, epochs=50, loss_func='mse', physics_loss=True, plot=True, store_grads=True)
+    network.learn(learn_data=learn_data, lr=0.001, epochs=50, loss_func='mse', collocation_data=collocation_data, plot=True, store_grads=True)
+    
+    print(network.forward(input_data=np.array([[10., 2.]]), store_grads=True))
 
-    for layer in network.layers:
-        if isinstance(layer, Layer):
-            if hasattr(layer, 'g'):
-                print(f"{layer} has g: {layer.g.shape}")
+    # # Create a grid of points in the domain [0, 2π] x [0, 2π]
+    # num_points = 100
+    # x1 = np.linspace(0, 2*np.pi, num_points)
+    # x2 = np.linspace(0, 2*np.pi, num_points)
+    # X1, X2 = np.meshgrid(x1, x2)
+
+    # # Reshape grid points into a (N, 2) array for network input
+    # grid_points = np.hstack([X1.reshape(-1, 1), X2.reshape(-1, 1)])
+
+    # # Get network predictions, assume network.forward returns predictions of shape (N, 1)
+    # predictions = network.forward(grid_points)   # predicted shape (N, 1)
+    # predictions = predictions.reshape(X1.shape)   # reshape to (num_points, num_points)
+
+    # # Ground truth: sin(x1)*cos(x2)
+    # ground_truth = np.sin(X1) * np.cos(X2)
+
+    # # Compute absolute error
+    # error = np.abs(predictions - ground_truth)
+
+    # # Plot the ground truth, network prediction, and absolute error in a three-panel figure.
+    # fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+    # # Ground Truth Plot
+    # im0 = axes[0].imshow(ground_truth, origin='lower', extent=[0, 2*np.pi, 0, 2*np.pi], cmap='viridis')
+    # axes[0].set_title(r"Ground Truth: $u(x_1, x_2) = \sin(x1)\cos(x2)$")
+    # axes[0].set_xlabel(r"$x_1$")
+    # axes[0].set_ylabel(r"$x_2$")
+    # fig.colorbar(im0, ax=axes[0])
+
+    # # Network Prediction Plot
+    # im1 = axes[1].imshow(predictions, origin='lower', extent=[0, 2*np.pi, 0, 2*np.pi], cmap='viridis')
+    # axes[1].set_title(r"Model: $\hat{u}(x_1, x_2)$")
+    # axes[1].set_xlabel(r"$x_1$")
+    # axes[1].set_ylabel(r"$x_2$")
+    # fig.colorbar(im1, ax=axes[1])
+
+    # # Error Plot
+    # im2 = axes[2].imshow(error, origin='lower', extent=[0, 2*np.pi, 0, 2*np.pi], cmap='magma')
+    # axes[2].set_title(r"$|\hat{u}(x_1, x_2) - u(x_1, x_2)|$")
+    # axes[2].set_xlabel(r"$x_1$")
+    # axes[2].set_ylabel(r"$x_2$")
+    # fig.colorbar(im2, ax=axes[2])
+
+    # plt.tight_layout()
+    # plt.savefig('sin_cos_heatmap.png', dpi=300)
+    # plt.show()
+
+
+    # for layer in network.layers:
+    #     if isinstance(layer, Layer):
+    #         if hasattr(layer, 'g'):
+    #             print(f"{layer} has g: {layer.g.shape}")
 
     # print(network.layers[0].z.shape)
-    # network.autograd()
-    # network.autograd_derivs()
+    # grad_test_data = np.tile([[0., 1.]], (1, 1))
+    # print(network.forward(grad_test_data, store_grads=True))
 
-    # print(network.J)
-    # print(network.H)
+
+    # numerical_J, numerical_H = network.numerical_jacobian_hessian(X=grad_test_data)
     # print(network.dJ_da)
     # print(network.dH_da)
 
-    # print(f"\n{network.complex_step_derivative(1)}")
-    # print(f"\n{network.forward(np.array([1]))}")
-    # print(f"\n{network.numerical_first_derivative(np.array([1]))}")
-    # print(f"\n{network.numerical_second_derivative(np.atleast_2d(1))}")
 
+    # def compute_errors_over_domain(net, N: int = 50, h: float = 1e-5) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    #     # Create a uniform grid in x and y over [0, 2π]
+    #     x_vals = np.linspace(0, 2*np.pi, N)
+    #     y_vals = np.linspace(0, 2*np.pi, N)
+    #     X, Y = np.meshgrid(x_vals, y_vals)
+        
+    #     error_J = np.zeros((N, N))
+    #     error_H = np.zeros((N, N))
+        
+    #     # Loop over each grid point. Our network expects inputs of shape (1,2).
+    #     for i in range(N):
+    #         for j in range(N):
+    #             inp = np.array([[X[i, j], Y[i, j]]], dtype=np.float64)   # shape (1,2)
+                
+    #             # Run forward pass to set network internal states.
+    #             _ = net.forward(inp, store_grads=True)
+    #             # Compute autograd estimates (which update network.J_batch and network.H_batch)
+    #             net.autograd()      # computes self.J_batch (e.g., shape (1, 1, 2))
+    #             # (Optionally, one might call autograd_derivs() for sensitivity but here we compare J and H directly.)
+                
+    #             # Squeeze autograd results to shape (2,)
+    #             autograd_J = np.squeeze(net.J_batch)  # expected to be (1,2) --> (2,)
+    #             autograd_H = np.squeeze(net.H_batch)  # expected to be (1,2) --> (2,)
+                
+    #             # Compute numerical estimates on the same point.
+    #             numJ, numH = net.numerical_jacobian_hessian(inp, h=h)
+    #             numJ = np.squeeze(numJ)  # shape (2,)
+    #             numH = np.squeeze(numH)  # shape (2,)
+                
+    #             # L2 norm of the difference (for each, over the two input dimensions)
+    #             error_J[i, j] = np.linalg.norm(autograd_J - numJ)
+    #             error_H[i, j] = np.linalg.norm(autograd_H - numH)
+                
+    #     return X, Y, error_J, error_H
 
-    # times = []
-    # for _ in range(5):
-    #     start = time.time()
-    #     network.learn(learn_data=learn_data, lr=0.001, epochs=10, loss_func='mse', physics_loss=False)
-    #     dt = time.time() - start
+    # # Example usage:
+    # # Assume 'network' is already instantiated and trained (or at least set up) to approximate u(x,y) = sin(x)cos(y).
+    # X, Y, error_J, error_H = compute_errors_over_domain(network, N=50, h=1e-5)
 
-    #     times.append(dt)
-    #     network.setup()
+    # # Plot the L2 error for the Jacobian and Hessian.
+    # plt.figure(figsize=(12, 5))
 
-    # # with open('10_epochs.csv', mode='w', newline='') as file:
-    # #     writer = csv.writer(file)
-    # #     writer.writerow(['Run', 'non_batched_time (s)'])  # Header
-    # #     for i, t in enumerate(times, 1):
-    # #         writer.writerow([i, t])
+    # plt.subplot(1, 2, 1)
+    # plt.contourf(X, Y, error_J, levels=50, cmap='viridis')
+    # plt.colorbar()
+    # plt.title(r"L2 Error of Jacobian Estimates")
+    # plt.xlabel(r"$x_1$")
+    # plt.ylabel(r"$x_2$")
 
-    # with open('10_epochs.csv', mode='r', newline='') as file:
-    #     reader = list(csv.reader(file))
-    #     header = reader[0]
-    #     rows = reader[1:]
+    # plt.subplot(1, 2, 2)
+    # plt.contourf(X, Y, error_H, levels=50, cmap='magma')
+    # plt.colorbar()
+    # plt.title(r"L2 Error of Diagonal Hessian Estimates")
+    # plt.xlabel(r"$x_1$")
+    # plt.ylabel(r"$x_2$")
 
-    # # Your new batched times (same number of runs)
-
-    # # Add new column to header
-    # header.append('non_physics_time (s)')
-
-    # # Add new column to each row
-    # for i, row in enumerate(rows):
-    #     row.append(str(times[i]))
-
-    # # Write the updated data back
-    # with open('10_epochs.csv', mode='w', newline='') as file:
-    #     writer = csv.writer(file)
-    #     writer.writerow(header)
-    #     writer.writerows(rows)
-    
-    # print(network.current_lr)
-
-    # test_inputs = np.linspace(0, 2*np.pi, 100)
-    # model_outputs = [network.forward(np.atleast_2d(input)).squeeze(0) for input in test_inputs]
-
-    # plt.figure()
-    # plt.plot(test_inputs, np.sin(test_inputs), label="True")
-    # plt.plot(test_inputs, model_outputs, label="Model")
-    # plt.legend()
+    # plt.tight_layout()
+    # plt.savefig('numerical_vs_autograd.png', dpi=300)
     # plt.show()
-
-    # network.interactive_inference()
-
-    # Optionally print weights to check
-    # print(f'\nInput layer W:\n{input_layer.W}\nInput layer B:\n{input_layer.B}')
-    # print(f'\nFirst Hidden layer W:\n{hidden_layer_1.W}\nFirst Hidden layer B:\n{hidden_layer_1.B}')

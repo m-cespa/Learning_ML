@@ -309,7 +309,7 @@ class ActivationLayer(BaseLayer):
         # self.previous.activation_deriv = deriv
 
         return error
-    
+        
 class Optimizer:
     def update(self, lr, layer):
         """
@@ -321,7 +321,7 @@ class Optimizer:
         """
         Clear all optimizer-specific accumulators for given layer.
         """
-        raise NotImplementedError("reset() function must be implemented.")
+        pass
 
 class GD(Optimizer):
     def update(self, lr: float, layer: Layer):
@@ -508,11 +508,45 @@ class Network:
         return self.layers[-1].A
     
     def MSELoss(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
-        return 0.5 * np.mean((x - y) ** 2, axis=-1)
+        return 0.5 * np.mean((x - y) ** 2, axis=0)
 
     def CELoss(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         x = np.clip(x, 1e-15, 1 - 1e-15)
         return -np.sum(y * np.log(x), axis=-1)
+    
+
+    def numerical_jacobian_hessian(self, X: np.ndarray, h: float = 1e-5) -> Tuple[np.ndarray, np.ndarray]:
+        # Evaluate the network at the original inputs.
+        u0 = self.forward(X, store_grads=False)   # shape: (batch, 1)
+        batch = X.shape[0]
+        
+        # Prepare empty arrays for the gradient and diagonal Hessian.
+        jacobian = np.zeros((batch, 2))
+        hessian_diag = np.zeros((batch, 2))
+        
+        # Loop over the 2 input dimensions.
+        for j in range(2):
+            # Copy the original input array (shape: (batch, 2)) for perturbations.
+            X_plus = X.copy()
+            X_minus = X.copy()
+            
+            # Perturb the jth coordinate by +h and -h, respectively.
+            X_plus[:, j] += h
+            X_minus[:, j] -= h
+            
+            # Evaluate the network at the perturbed inputs.
+            u_plus = self.forward(X_plus, store_grads=False)   # shape: (batch, 1)
+            u_minus = self.forward(X_minus, store_grads=False) # shape: (batch, 1)
+            
+            # Compute the jth component of the gradient via central difference:
+            # (u(x+h) - u(x-h)) / (2h)
+            jacobian[:, j] = ((u_plus - u_minus) / (2 * h)).reshape(batch)
+            
+            # Compute the jth diagonal term of the Hessian using central difference:
+            # (u(x+h) - 2u(x) + u(x-h)) / (h^2)
+            hessian_diag[:, j] = ((u_plus - 2 * u0 + u_minus) / (h ** 2)).reshape(batch)
+        
+        return jacobian, hessian_diag
             
     def numerical_physics_loss(self, x: np.ndarray, h=1e-5) -> List[np.ndarray]:
         """
@@ -575,8 +609,6 @@ class Network:
         # average over batch dimension
         self.J_batch = overall_J
         self.H_batch = overall_H
-        # self.J = np.mean(overall_J, axis=0)
-        # self.H = np.mean(overall_H, axis=0)
 
     def autograd_derivs(self) -> None:
         """
@@ -592,10 +624,13 @@ class Network:
         A_double = final_layer.second_deriv(final_z)    # shape (batch, out_dim)
         A_third = final_layer.third_deriv(final_z)      # shape (batch, out_dim)
 
+        # guard against vanishing gradients
+        epsilon = 1e-8
         # expand dims to allow elementwise operations on last two axes
-        A_prime_exp   = A_prime[:, :, None]    # (batch, out_dim, 1)
-        A_double_exp  = A_double[:, :, None]   # (batch, out_dim, 1)
-        A_third_exp   = A_third[:, :, None]    # (batch, out_dim, 1)
+        # should all be shape: (batch, out_dim, 1)
+        A_prime_exp = np.where(np.abs(A_prime[:, :, None]) < epsilon, epsilon, A_prime[:, :, None])
+        A_double_exp = np.where(np.abs(A_double[:, :, None]) < epsilon, epsilon, A_double[:, :, None])
+        A_third_exp = np.where(np.abs(A_third[:, :, None]) < epsilon, epsilon, A_third[:, :, None])
 
         # overall_J_batch = A_prime ⊙ directional_deriv
         directional_deriv = self.J_batch / A_prime_exp
@@ -609,29 +644,37 @@ class Network:
         # dH/da^L = (A_third/(A_prime^3)) ⊙ (overall_J_batch^2) + (A_double/A_prime) ⊙ propagated_H
         dH_da_batch = (A_third_exp / (A_prime_exp**3)) * (self.J_batch**2) \
                     + (A_double_exp / A_prime_exp) * propagated_H
-
+        
         self.dJ_da = dJ_da_batch   # shape: (batch_dim, out_dim, input_dim)
         self.dH_da = dH_da_batch   # shape: (batch_dim, out_dim, input_dim)
 
-    def physics_loss(self, y) -> List[np.ndarray]:
+    def physics_loss(self, collocation_data) -> List[np.ndarray]:
+        """
+        Calculates the Physics Loss as k*d^2u/dx^2 - du/dt (= 0 in theory)
+        Uses the collocation_data of size N and runs a singular forward pass
+        with batch size N
+        """
+        k, L, collocation_data = collocation_data
+        self.forward(input_data=collocation_data, store_grads=True)
         self.autograd()
         self.autograd_derivs()
 
-        # print(self.H_batch.shape)
-        # print(self.J_batch.shape)
-        # print(y.shape)
-        # print(self.dH_da.shape)
-        # print(self.dJ_da.shape)
-        # sys.exit("Stopping the program")
+        # expect all the J, H and derivatives to be shape (N_colloc, output_dim, input_dim)
+        du_dt = np.squeeze(self.J_batch[:, :, 1])
+        d2u_dx2 = np.squeeze(self.H_batch[:, :, 0])
 
-        y = np.squeeze(y)
-        loss = (np.squeeze(self.H_batch) + y) ** 2
-        grad_loss = 2 * (np.squeeze(self.H_batch) + y) * (np.squeeze(self.dH_da) + 1)
+        dJ_t_da = np.squeeze(self.dJ_da[:, :, 1])
+        dH_x_da = np.squeeze(self.dH_da[:, :, 0])
 
-        # print(f"grad_loss shape: {grad_loss.shape}")
-        # print(f"loss shape: {loss.shape}")
+        # loss includes boundary conditions and ICs
 
-        # sys.exit("stopping")
+        N = collocation_data.shape[0]
+        residual = k*d2u_dx2 - du_dt
+
+        loss = np.mean(residual**2, axis=0)
+
+        # gradient is averaged over the N collocation points
+        grad_loss = 2 * np.mean((k*dH_x_da - dJ_t_da)*residual, axis=0)
         
         return loss, grad_loss
 
@@ -660,23 +703,27 @@ class Network:
 
                 dW = np.einsum('bi, bj -> ij', layer.delta, layer.previous.A) / (batch_dim)
                 layer.W_grad.append(dW)
-        #         print(f"layer with size: {layer.size} given dW shape: {dW.shape}")
-                
-        # sys.exit('stop')
-    def backward(self, data: np.ndarray, label: np.ndarray, lr: float, loss_func: str, physics_loss: bool=True, store_grads: bool=False) -> np.ndarray:
-        """
-        Perform one backwards pass.
 
+    def backward(self, data: np.ndarray, label: np.ndarray, lr: float, loss_func: str, collocation_data=None, store_grads: bool=True) -> np.ndarray:
+        """
         Args:
             data shape: (batch_dim, input_dim)
             label shape: (batch_dim, output_dim)
+            collocation_data shape: (N_collocation, input_dim) - used for Physics loss if supplied
             lr: learning rate float
             loss_func: specifies which loss function to apply
-            physics_loss: introduce additive term into Loss to enforce physical constraints
             store_grads: calculates jacobians for layers when performing backwards pass
         """
-        # Jacobians computed in forward pass
+        # if collocation data available, get physics loss, otherwise use zeros
+        if collocation_data is not None:
+            Lp, grad_physics_loss = self.physics_loss(collocation_data)
+        else:
+            Lp, grad_physics_loss = 0., 0.
+
+        # NOTE: forward pass is performed after physics loss as the physics loss
+        # leaves network activations changed (no longer correspond to the training data)
         forward_out = self.forward(data, store_grads)
+        N_batch = forward_out.shape[0] if self.batch_training else 1
 
         assert forward_out.shape == label.shape
 
@@ -684,43 +731,12 @@ class Network:
             raise ValueError(f'Unsupported loss function: {loss_func}')
         
         loss = self.loss_functions[loss_func](forward_out, label)
+        mse_error = (forward_out - label) / N_batch
 
-        # print(f"MSE loss shape: {loss.shape}")
+        loss += self.physics_loss_weight * Lp
+        error = mse_error + (self.physics_loss_weight * grad_physics_loss)
 
-        if physics_loss:
-            Lp, grad_loss = self.physics_loss(y=forward_out)
-            grad_loss = grad_loss.reshape(-1, 1)
-
-            # # perform "3-way backpropagation" due to finite-difference derivative
-            # # then average the accumulated parameter gradients
-            # Lp, grad_y, grad_y_plus, grad_y_minus = self.physics_loss(data)
-            loss += self.physics_loss_weight * Lp
-
-            # print(f"grad_loss shape: {grad_loss.shape}")
-            # print(f"label shape: {label.shape}")
-            # print(f"weight shape: {"it's a goddamn float" if isinstance(self.physics_loss_weight, float) else self.physics_loss_weight.shape}")
-            # print(f"forward_out shape: {forward_out.shape}")
-            mse_error = forward_out - label
-
-            # print(f"mse_error shape: {mse_error.shape}")
-            error = mse_error + (self.physics_loss_weight * grad_loss)
-
-            # print(f"error shape: {error.shape}")
-
-            # # self.backward_helper(error_y)
-            # # errors for y+- evaluated using only the physics loss (we don't have a label)
-            # error_y_plus = self.physics_loss_weight * grad_y_plus
-            # # self.backward_helper(error_y_plus)
-
-            # error_y_minus = self.physics_loss_weight * grad_y_minus
-            # # self.backward_helper(error_y_minus)
-
-            # concatenated_error = np.concatenate([error_y, error_y_plus, error_y_minus], axis=0)
-            self.backward_helper(error)
-
-        else:
-            error = forward_out - label
-            self.backward_helper(error)
+        self.backward_helper(error)
 
         # assert loss.shape == (self.batch_dim,)
 
@@ -756,7 +772,7 @@ class Network:
         
         return current_lr * 0.999
 
-    def learn(self, learn_data: List[Tuple[np.ndarray, np.ndarray]], lr: float, epochs: int, loss_func: str, physics_loss: bool=True, plot: bool=False, store_grads: bool=False) -> None:
+    def learn(self, learn_data: List[Tuple[np.ndarray, np.ndarray]], lr: float, epochs: int, loss_func: str, collocation_data=None, plot: bool=False, store_grads: bool=False) -> None:
         """
         Args:
             learn_data: [(input_tensor, label_tensor), (input_tensor, label_tensor), ... ]
@@ -764,7 +780,7 @@ class Network:
             lr: initial learning rate float
             epochs: number of training epochs int
             loss_func: specifies which loss function to apply
-            physics_loss: turn on the physics loss function
+            collocation_data shape: (N_collocation, input_dim) - used for Physics loss if supplied
             plot: choose to plot loss against epochs
             store_grads: calculates jacobians for layers when performing backwards pass
         """
@@ -776,7 +792,7 @@ class Network:
             epoch_loss = 0
             for input, label in learn_data:
                 # use current adaptive learning rate in backward pass
-                loss = self.backward(input, label, self.current_lr, loss_func, physics_loss, store_grads)
+                loss = self.backward(input, label, self.current_lr, loss_func, collocation_data, store_grads)
                 epoch_loss += np.mean(loss)
 
             current_loss = epoch_loss / len(learn_data)
@@ -789,11 +805,11 @@ class Network:
         
         if plot:
             plt.figure()
-            plt.plot(range(epochs), losses, label='Loss')
-            plt.xlabel('Epoch')
-            plt.ylabel('Average Loss')
-            plt.title('Training Loss Over Epochs')
-            plt.legend()
+            plt.plot(range(epochs), losses)
+            plt.xlabel(r'Epoch')
+            plt.ylabel(r'Average Loss')
+            plt.title(r'Training Loss Over Epochs')
+            # plt.savefig('sin_cos_loss.png', dpi=300)
             plt.show()
 
     def save_parameters(self, file_path: str) -> None:
