@@ -456,7 +456,6 @@ class Network:
         Also resets any pre-existing optimiser accumulated measures.
         """
         for i, layer in enumerate(self.layers):
-            print(layer)
             # input layer just holds the variables, does not have weights/biases
             if i == 0:
                 continue
