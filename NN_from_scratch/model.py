@@ -88,10 +88,9 @@ class Layer(BaseLayer):
         Creates Layer of {size} neurons.
 
         Args:
-            size: number of neurons in layer.
-            batch_dim (optional): dimension of batches for training, set to 1 default.
-            previous (optional): pointer to previous layer.
-            next (optional): pointer to next layer.
+            size: number of neurons in layer
+            previous (optional): pointer to previous layer
+            weight_init: select the weight initialisation method
         """
         super().__init__()
         self.size = size
@@ -102,8 +101,8 @@ class Layer(BaseLayer):
         self.activation_deriv = None
 
         # will accumulate gradients to then alter parameters by
-        self.W_grad = []
-        self.B_grad = []
+        self.W_grad = 0
+        self.B_grad = 0
 
         # choose from weight initalisation methods
         # biases always initialised to zero
@@ -177,7 +176,8 @@ class Layer(BaseLayer):
         
         prev_size = current_layer.size
         
-        # Xavier-Glorot weight initialisation
+        # weights shape: (self.size, previous.size)
+        # bias shape: (self.size)
         weights_tensor = self.weight_initialisations[self.weight_init](out_dim=self.size, in_dim=prev_size)
         biases_tensor = np.zeros((self.size,))
 
@@ -188,6 +188,8 @@ class Layer(BaseLayer):
         Take activation vector a^{l-1}j from previous layer (should be an ActivationLayer)
         Perform z^{l}_i = w^{l}_ij a^{l-1}_j + b_i
         """
+        # if data isn't passed to the forward method, will fetch from previous.A
+        # assumes previous layer is ActivationLayer (always the case)
         if input_data is not None:
             A_prev = input_data
         else:
@@ -199,12 +201,11 @@ class Layer(BaseLayer):
 
         z = np.einsum('ij, bj -> bi', self.W, A_prev) + self.B
 
-        # assert z.shape == (self.batch_dim, self.size)
+        # z shape: (self.batch_dim, self.size)
         self.z = z
         self.activation_deriv = self.next.derivative(self.z)
 
-        # calculate Jacobian for autograd, don't take mean over batch dimension
-        # batch dimension left for Hessian calculation for 2nd order derivatives
+        # calculate layer-to-layer Jacobian for autograd, leaving batch dimension
         if store_grads:
             self.activation_second_deriv = self.next.second_deriv(self.z)
             self.g = np.einsum('bj, jk -> bjk', self.activation_deriv, self.W)
@@ -258,8 +259,9 @@ class Layer(BaseLayer):
             current = current.next
         # current should be the first downstream Layer whose 'error' vector this function received
 
+        # delta shape: (batch_dim, self.size)
         self.delta = np.einsum('ij, bi -> bj', current.W, error) * self.activation_deriv
-        
+
         return self.delta
     
 class ActivationLayer(BaseLayer):
@@ -307,12 +309,12 @@ class Optimizer:
         """
         Clear all optimizer-specific accumulators for given layer.
         """
-        pass
+        raise NotImplementedError("reset() function must be implemented.")
 
 class GD(Optimizer):
     def update(self, lr: float, layer: Layer):
-        layer.B -= lr * np.mean(layer.B_grad, axis=0)
-        layer.W -= lr * np.mean(layer.W_grad, axis=0)
+        layer.B -= lr * layer.B_grad
+        layer.W -= lr * layer.W_grad
 
 class SGD(Optimizer):
     def __init__(self, momentum: float=0.001):
@@ -323,13 +325,9 @@ class SGD(Optimizer):
             layer.W_velocity = np.zeros_like(layer.W)
             layer.B_velocity = np.zeros_like(layer.B)
 
-        # accumulate gradients (accounts for Physics loss)
-        dW = np.mean(layer.W_grad, axis=0)
-        dB = np.mean(layer.B_grad, axis=0)     
-
         # update velocities
-        layer.W_velocity = self.momentum * layer.W_velocity + dW
-        layer.B_velocity = self.momentum * layer.B_velocity + dB
+        layer.W_velocity = self.momentum * layer.W_velocity + layer.W_grad
+        layer.B_velocity = self.momentum * layer.B_velocity + layer.B_grad
         
         # update parameters
         layer.W -= lr * layer.W_velocity
@@ -368,16 +366,12 @@ class Adam(Optimizer):
             layer.mB = np.zeros_like(layer.B)
             layer.vB = np.zeros_like(layer.B)
 
-        # accumulate gradients (accounts for Physics loss)
-        dW = np.mean(layer.W_grad, axis=0)
-        dB = np.mean(layer.B_grad, axis=0)
-
         # assume most recent (averaged) gradients are in dW and dB
-        layer.mW = self.beta1 * layer.mW + (1 - self.beta1) * dW
-        layer.vW = self.beta2 * layer.vW + (1 - self.beta2) * (dW**2)
+        layer.mW = self.beta1 * layer.mW + (1 - self.beta1) * layer.W_grad
+        layer.vW = self.beta2 * layer.vW + (1 - self.beta2) * (layer.W_grad**2)
 
-        layer.mB = self.beta1 * layer.mB + (1 - self.beta1) * dB
-        layer.vB = self.beta2 * layer.vB + (1 - self.beta2) * (dB**2)
+        layer.mB = self.beta1 * layer.mB + (1 - self.beta1) * layer.B_grad
+        layer.vB = self.beta2 * layer.vB + (1 - self.beta2) * (layer.B_grad**2)
 
         # bias correction
         mW_hat = layer.mW / (1 - self.beta1**self.t)
@@ -413,13 +407,9 @@ class Lion(Optimizer):
             layer.mW = np.zeros_like(layer.W)
             layer.mB = np.zeros_like(layer.B)
         
-        # accumulate gradients (accounts for Physics loss)
-        dW = np.mean(layer.W_grad, axis=0)
-        dB = np.mean(layer.B_grad, axis=0)
-
         # assume most recent (averaged) gradients are in dW and dB
-        layer.mW = self.beta * layer.mW + (1 - self.beta) * dW
-        layer.mB = self.beta * layer.mB + (1 - self.beta) * dB
+        layer.mW = self.beta * layer.mW + (1 - self.beta) * layer.W_grad
+        layer.mB = self.beta * layer.mB + (1 - self.beta) * layer.B_grad
         
         # use sign of moment to update parameters
         layer.W -= lr * np.sign(layer.mW)
@@ -443,22 +433,19 @@ class Network:
             batch_training: network supports completely dynamic batch training (default set to True)
         """
         self.layers = layers
-        self.input_dim = layers[0].size
-        # assumes there is an output activation (ActivationLayers do not have a size)
-        self.output_dim = layers[-2].size
-
         self.physics_loss_weight = physics_loss_weight
         self.optim = optim
 
         # link the layers
         self.setup()
 
+        self.input_dim = layers[0].size
+        self.output_dim = layers[-1].size
+
         self.loss_functions = {
             'mse': self.MSELoss,
             'ce': self.CELoss
         }
-
-        # self.batch_dim = layers[0].A.shape[0]
         self.batch_training = batch_training
 
     def setup(self) -> None:
@@ -469,24 +456,31 @@ class Network:
         Also resets any pre-existing optimiser accumulated measures.
         """
         for i, layer in enumerate(self.layers):
+            print(layer)
             # input layer just holds the variables, does not have weights/biases
             if i == 0:
                 continue
             # reset any existing optimiser parameters
             self.optim.reset(layer)
 
+            # link layers together
             layer.previous = self.layers[i-1]
             self.layers[i-1].next = layer
+
+            # initialise Layer object weights
             if isinstance(layer, Layer):
                 layer.assign_previous_layer(self.layers[i-1])
+
+            # assign size of the previous Layer object to all ActivationLayers
+            if isinstance(layer, ActivationLayer):
+                layer.size = layer.previous.size
 
     def forward(self, input_data: np.ndarray, store_grads=True) -> np.ndarray:
         """
         Args:
             input_data shape: (batch_dim, input_layer.size)
+            store_grads: calculates layer Jacobians in forward pass
         """
-        # assert input_data.shape == self.layers[0].A.shape
-
         self.layers[0].z = input_data
 
         for layer in self.layers[1:]:
@@ -650,11 +644,12 @@ class Network:
         """
         current_error = error
 
-        # Back-propagate errors
+        # back-propagate errors
         for layer in self.layers[-1:0:-1]:
             current_error = layer.backward(current_error)
 
         # calculate parameter gradients (averaged over batch dimension, IF there is batch_training)
+        # important to recalculate this size in case a batch is differently shaped from the previous
         batch_dim = error.shape[0] if self.batch_training else 1
 
         for layer in self.layers[1:]:
@@ -663,11 +658,9 @@ class Network:
                     layer.previous.A[None, :]
                     layer.delta[None, :]
 
-                dB = np.sum(layer.delta, axis=0) / (batch_dim)
-                layer.B_grad.append(dB)
-
-                dW = np.einsum('bi, bj -> ij', layer.delta, layer.previous.A) / (batch_dim)
-                layer.W_grad.append(dW)
+                # average the parameter gradients over the batch dimension
+                layer.B_grad = np.sum(layer.delta, axis=0) / batch_dim
+                layer.W_grad = np.einsum('bi, bj -> ij', layer.delta, layer.previous.A) / batch_dim
 
     def backward(self, data: np.ndarray, label: np.ndarray, lr: float, loss_func: str, 
                  collocation_data=None, boundary_data=None, store_grads: bool=True) -> np.ndarray:
@@ -687,7 +680,7 @@ class Network:
         else:
             Lp, grad_physics_loss = 0., 0.
 
-        # NOTE: forward pass is performed after physics loss as the physics loss
+        # NOTE: forward pass is performed AFTER physics loss as the physics loss
         # leaves network activations changed (no longer correspond to the training data)
         forward_out = self.forward(data, store_grads)
         N_batch = forward_out.shape[0] if self.batch_training else 1
@@ -700,18 +693,22 @@ class Network:
         loss = self.loss_functions[loss_func](forward_out, label)
         mse_error = (forward_out - label) / N_batch
 
+        # add physics loss term to total loss and error to propagate
         loss += self.physics_loss_weight * Lp
         error = mse_error + (self.physics_loss_weight * grad_physics_loss)
 
+        # perform backpropagation
         self.backward_helper(error)
 
         # assert loss.shape == (self.batch_dim,)
 
         for layer in self.layers[1:]:
             if isinstance(layer, Layer):
+                # perform the optimiser update on each layer
                 self.optim.update(lr=lr, layer=layer)
-                layer.W_grad = []
-                layer.B_grad = []
+                # reset parameter gradients for next epoch
+                layer.W_grad = 0
+                layer.B_grad = 0
 
         # if optimizer is Adam, increase global timestep
         if isinstance(self.optim, Adam):

@@ -151,7 +151,7 @@ def generate_boundary_data(N: int, k: float, L: float):
 
 if __name__ == "__main__":
     # Define the input, output sizes, batch dimensions
-    batch_dim = 8
+    batch_dim = 5
     input_size = 2
     output_size = 1
 
@@ -224,7 +224,7 @@ if __name__ == "__main__":
     # Choose time instances.
     # 4 times uniformly in [0, T] and 2 times uniformly in [T, T+5]
     times_inside = np.linspace(0, T, 3)
-    times_outside = np.linspace(T+5, T+5, 1)
+    times_outside = np.linspace(T+3, T+3, 1)
     all_times = np.concatenate((times_inside, times_outside))
 
     # Create the figure and axis (one single plot)
