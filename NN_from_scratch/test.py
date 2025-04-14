@@ -65,7 +65,7 @@ def generate_trig_data(total_samples: int, batch_dim: int, input_size: int,
 
 def generate_heat_eq_data(total_samples: int, batch_dim: int, k: float, L: float):
     num_batches = total_samples // batch_dim  # e.g. 200/5 = 40 mini-batches.
-    T = 2 / (k*(np.pi / L)**2)  # Define T: the maximum time for training. Adjust as needed.
+    T = 2 / (k * (np.pi / L)**2)  # Define T: the maximum time for training. Adjust as needed.
     
     # Training domain: for each input dimension we define a range.
     # x in [0, L] and t in [0, T]
@@ -90,7 +90,7 @@ def generate_heat_eq_data(total_samples: int, batch_dim: int, k: float, L: float
     
     return batches
 
-def generate_collocation_data(N: int, k: float, L: float) -> np.ndarray:
+def generate_collocation_data(N: int, k: float, L: float):
     T = 2 / (k * (np.pi / L)**2)  # Max time
     
     # Compute minimal grid resolution to get at least N points
@@ -111,9 +111,47 @@ def generate_collocation_data(N: int, k: float, L: float) -> np.ndarray:
     return [k, L, collocation_inputs]
 
 
+def generate_boundary_data(N: int, k: float, L: float):
+    T = 2 / (k * (np.pi / L)**2)  # Maximum time
+
+    # u(x,0): x in [0, L], t = 0.
+    # u(0,t): t in [0, T], x = 0.
+    # u(L,t): t in [0, T], x = L.
+
+    # We determine a grid size per boundary so that we have at least N points in total.
+    n_boundary = int(np.ceil(N / 3))  # points per boundary (roughly)
+    
+    # Boundary 1: u(x, 0)
+    x1 = np.linspace(0, L, n_boundary)
+    t1 = np.zeros(n_boundary)
+    pts1 = np.stack([x1, t1], axis=1)
+    
+    # Boundary 2: u(0, t)
+    t2 = np.linspace(0, T, n_boundary)
+    x2 = np.zeros(n_boundary)
+    pts2 = np.stack([x2, t2], axis=1)
+    
+    # Boundary 3: u(L, t)
+    t3 = np.linspace(0, T, n_boundary)
+    x3 = np.full(n_boundary, L)
+    pts3 = np.stack([x3, t3], axis=1)
+    
+    # Combine all boundary points
+    all_pts = np.concatenate([pts1, pts2, pts3], axis=0)
+    
+    # If we have more points than needed, randomly sample exactly N points (without replacement)
+    if all_pts.shape[0] > N:
+        indices = np.random.choice(all_pts.shape[0], size=N, replace=False)
+        boundary_inputs = all_pts[indices]
+    else:
+        boundary_inputs = all_pts  # if exactly N or fewer (unlikely), return all
+    
+    return boundary_inputs
+
+
 if __name__ == "__main__":
     # Define the input, output sizes, batch dimensions
-    batch_dim = 5
+    batch_dim = 8
     input_size = 2
     output_size = 1
 
@@ -124,12 +162,14 @@ if __name__ == "__main__":
     activation1 = ActivationLayer(ELU())
     hidden_layer_2 = Layer(size=16)
     activation2 = ActivationLayer(ELU())
-    hidden_layer_3 = Layer(size=16)
+    hidden_layer_3 = Layer(size=32)
     activation3 = ActivationLayer(ELU())
-    hidden_layer_4 = Layer(size=8)
+    hidden_layer_4 = Layer(size=16)
     activation4 = ActivationLayer(ELU())
+    hidden_layer_5 = Layer(size=8)
+    activation5 = ActivationLayer(ELU())
     output_layer = Layer(size=output_size)
-    output_activation = ActivationLayer(ELU())
+    output_activation = ActivationLayer(Linear())
 
     # Link layers sequentially
     network = Network(layers=[input_layer,
@@ -138,10 +178,12 @@ if __name__ == "__main__":
                        activation1,
                        hidden_layer_2,
                        activation2,
-                    #    hidden_layer_3,
-                    #    activation3,
+                       hidden_layer_3,
+                       activation3,
                        hidden_layer_4,
                        activation4,
+                       hidden_layer_5,
+                       activation5,
                        output_layer,
                        output_activation],
                        physics_loss_weight=0.001,
@@ -151,23 +193,75 @@ if __name__ == "__main__":
     learn_data = generate_heat_eq_data(
         total_samples=500,
         batch_dim=batch_dim,
-        k=5.,
-        L=10.
+        k=1.,
+        L=5.
     )
 
-    collocation_data = generate_collocation_data(N=100, k=5., L=10.)
+    collocation_data = generate_collocation_data(N=200, k=1., L=5.)
+    boundary_data = generate_boundary_data(N=200, k=1., L=5.)
 
     # Print shapes of the first label and input tensors to verify correctness
     print(f"Shape of label tensor: {learn_data[0][1].shape}")  # Should be (batch_dim, output_size)
     print(f"Shape of input tensor: {learn_data[0][0].shape}")  # Should be (batch_dim, input_size)
+    
+    network.learn(learn_data=learn_data, lr=0.001, epochs=20, loss_func='mse', 
+                  collocation_data=collocation_data, boundary_data=boundary_data, plot=True, store_grads=True)
+    
+    # Parameters
+    k = 1.0
+    L = 5.0
+    # Define T such that t in [0, T] covers the intended training time.
+    T = 2 / ((np.pi / L)**2)
 
-    # print(network.layers[0].A.shape)
-    # test datum to probe Jacobian and Hessian
-    # learn_data.append((np.array([[1]]), np.array([[0.84147]])))
-    
-    network.learn(learn_data=learn_data, lr=0.001, epochs=50, loss_func='mse', collocation_data=collocation_data, plot=True, store_grads=True)
-    
-    print(network.forward(input_data=np.array([[10., 2.]]), store_grads=True))
+    # Define the analytic solution:
+    def analytic_u(x, t):
+        # x: numpy array, t: scalar
+        return 6 * np.sin(np.pi * x / L) * np.exp(-t * (k * np.pi / L)**2)
+
+    # Generate a dense grid of x values covering [0, 2L] for visualization
+    x_vals = np.linspace(0, L, 200)
+
+    # Choose time instances.
+    # 4 times uniformly in [0, T] and 2 times uniformly in [T, T+5]
+    times_inside = np.linspace(0, T, 3)
+    times_outside = np.linspace(T+5, T+5, 1)
+    all_times = np.concatenate((times_inside, times_outside))
+
+    # Create the figure and axis (one single plot)
+    plt.figure(figsize=(8, 6))
+    ax = plt.gca()
+
+    # Define a set of colors using a colormap for clarity.
+    colors = plt.cm.viridis(np.linspace(0, 1, len(all_times)))
+
+    # Loop over each time instance, plot both analytic and network curves.
+    for idx, t in enumerate(all_times):
+        # For each t, create a batch input with shape (200,2): each row is [x, t]
+        X = np.vstack((x_vals, np.full_like(x_vals, t))).T  # shape (200, 2)
+        
+        # Get network prediction:
+        pred = network.forward(input_data=X, store_grads=False)  # expected shape (200,1)
+        pred = np.squeeze(pred)  # shape (200,)
+        
+        # Compute ground truth from the analytic solution
+        gt = analytic_u(x_vals, t)
+        
+        # Plot analytic solution as a solid line, network prediction as dashed.
+        # Label only one representative label per time.
+        ax.plot(x_vals, gt, color=colors[idx], linestyle='-', linewidth=2,
+                label=f"Analytic, t={t:.2f}")
+        ax.plot(x_vals, pred, color=colors[idx], linestyle='--', linewidth=2,
+                label=f"Network, t={t:.2f}")
+
+    # Improve the plot
+    ax.set_title(r"Network vs Analytic Solution$", fontsize=16)
+    ax.set_xlabel(r"$x$", fontsize=14)
+    ax.set_ylabel(r"$u(x,t)$", fontsize=14)
+    ax.legend(fontsize=10, loc='upper right', ncol=2)
+    ax.grid(True)
+
+    plt.tight_layout()
+    plt.show()
 
     # # Create a grid of points in the domain [0, 2π] x [0, 2π]
     # num_points = 100
