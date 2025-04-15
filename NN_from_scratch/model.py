@@ -504,82 +504,58 @@ class Network:
         return -np.sum(y * np.log(x), axis=-1)
     
     def numerical_jacobian_hessian(self, X: np.ndarray, h: float = 1e-5) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Computes higher–accuracy numerical approximations for:
-        - the Jacobian (J) ≈ u'(x) using a fourth–order five–point formula
-        - the diagonal Hessian (H) ≈ u''(x) using a fourth–order five–point formula
-        - the derivative of J with respect to the output activation (dJ/da) ≈ u''(x)/u'(x)
-        - the derivative of H with respect to the output activation (dH/da) ≈ u'''(x)/u'(x)
-        
-        Parameters:
-        X (np.ndarray): Input array of shape (batch, input_dim).
-        h (float): Perturbation step size.
-        
-        Returns:
-        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-            - jacobian:     shape (batch, input_dim)
-            - hessian_diag: shape (batch, input_dim)
-            - dJ_da:        derivative of J with respect to activation, shape (batch, input_dim)
-            - dH_da:        derivative of H with respect to activation, shape (batch, input_dim)
-        """
-        # Evaluate the network at the original inputs.
-        u0 = self.forward(X, store_grads=False)  # u0; shape: (batch, 1)
-        batch = X.shape[0]
-        
-        # Prepare arrays to store the results.
-        jacobian      = np.zeros((batch, 2))
-        hessian_diag  = np.zeros((batch, 2))
-        dJ_da         = np.zeros((batch, 2))
-        dH_da         = np.zeros((batch, 2))
-        
-        # A small constant to avoid division by zero.
+        batch_size, input_dim = X.shape
         eps = 1e-12
         
-        for j in range(2):
-            # Create copies of X for the five points.
-            X_plus2  = X.copy()
-            X_plus   = X.copy()
-            X_minus  = X.copy()
-            X_minus2 = X.copy()
+        # Original outputs
+        u0 = self.forward(X, store_grads=False).flatten()  # shape: (batch_size,)
+        
+        # Initialize outputs
+        jacobian = np.zeros((batch_size, input_dim))
+        hessian_diag = np.zeros((batch_size, input_dim))
+        dJ_da = np.zeros((batch_size, input_dim))
+        dH_da = np.zeros((batch_size, input_dim))
+        
+        for j in range(input_dim):
+            # Create perturbations
+            offsets = np.zeros_like(X)
+            offsets[:, j] = h
             
-            # Perturb the j-th coordinate.
-            X_plus2[:, j]  += 2 * h
-            X_plus[:, j]   += h
-            X_minus[:, j]  -= h
-            X_minus2[:, j] -= 2 * h
+            X_plus2 = X + 2*offsets
+            X_plus = X + offsets
+            X_minus = X - offsets
+            X_minus2 = X - 2*offsets
             
-            # Evaluate the network at the five perturbed inputs.
-            u_plus2  = self.forward(X_plus2,  store_grads=False)  # shape: (batch, 1)
-            u_plus   = self.forward(X_plus,   store_grads=False)  # shape: (batch, 1)
-            u_minus  = self.forward(X_minus,  store_grads=False)  # shape: (batch, 1)
-            u_minus2 = self.forward(X_minus2, store_grads=False)  # shape: (batch, 1)
+            # Forward passes (batched)
+            perturbed_inputs = np.concatenate([X_plus2, X_plus, X_minus, X_minus2])
+            perturbed_outputs = self.forward(perturbed_inputs, store_grads=False)
+            u_plus2, u_plus, u_minus, u_minus2 = np.split(perturbed_outputs, 4)
             
-            # Fourth–order finite difference for the first derivative (Jacobian).
-            # J = (-u(x+2h) + 8u(x+h) - 8u(x-h) + u(x-2h)) / (12h)
-            J_4 = (-u_plus2 + 8*u_plus - 8*u_minus + u_minus2) / (12 * h)
+            # Flatten all outputs
+            u0_flat = u0
+            u_plus2 = u_plus2.flatten()
+            u_plus = u_plus.flatten()
+            u_minus = u_minus.flatten()
+            u_minus2 = u_minus2.flatten()
             
-            # Fourth–order finite difference for the second derivative (diagonal Hessian).
-            # H = (-u(x+2h) + 16u(x+h) - 30u(x) + 16u(x-h) - u(x-2h)) / (12h^2)
-            H_4 = (-u_plus2 + 16*u_plus - 30*u0 + 16*u_minus - u_minus2) / (12 * h**2)
+            # Fourth-order finite differences
+            J = (-u_plus2 + 8*u_plus - 8*u_minus + u_minus2) / (12 * h)
+            H = (-u_plus2 + 16*u_plus - 30*u0_flat + 16*u_minus - u_minus2) / (12 * h**2)
             
-            # Fifth–order approximation: Use the fourth order approximations for u'(x) and u''(x)
-            # and then, using a chain–rule perspective, define:
-            # dJ/da ≈ u''(x)/u'(x) = H_4 / J_4.
-            # (This gives a dimensionless sensitivity.)
-            dJ = H_4 / (J_4 + eps)
+            # Store Jacobian and Hessian
+            jacobian[:, j] = J
+            hessian_diag[:, j] = H
             
-            # For the third derivative, use a 4th–order five–point stencil:
-            # u'''(x) ≈ (-u(x+2h) + 2u(x+h) - 2u(x-h) + u(x-2h)) / (2h^3)
-            T_4 = (-u_plus2 + 2*u_plus - 2*u_minus + u_minus2) / (2 * h**3)
-            # Then, define dH/da ≈ u'''(x)/u'(x) ≈ T_4 / J_4.
-            dH = T_4 / (J_4 + eps)
-            
-            # Store the results for the jth coordinate.
-            jacobian[:, j]     = np.squeeze(J_4)
-            hessian_diag[:, j] = np.squeeze(H_4)
-            dJ_da[:, j]        = np.squeeze(dJ)
-            dH_da[:, j]        = np.squeeze(dH)
-            
+            # Compute dJ/da and dH/da
+            with np.errstate(divide='ignore', invalid='ignore'):
+                # dJ/da = H/J (when J ≠ 0)
+                dJ_da[:, j] = np.where(np.abs(J) > eps, H/J, 0)
+                
+                # dH/da using central difference for da
+                delta_a = u_plus - u_minus
+                delta_H = H - (-u_plus2 + 16*u_plus - 30*u0_flat + 16*u_minus - u_minus2) / (12 * h**2)
+                dH_da[:, j] = np.where(np.abs(delta_a) > eps, delta_H/delta_a, 0)
+        
         return jacobian, hessian_diag, dJ_da, dH_da
  
     def autograd(self) -> None:
@@ -619,6 +595,10 @@ class Network:
                 if layer == self.layers[-4]:
                     self.H_Lminus1 = overall_H
 
+        # for networks of 4 total layers (input -> output), H_Lminus1 is 0 by default:
+        if not hasattr(self, 'H_Lminus1'):
+            self.H_Lminus1 = 0
+
         # average over batch dimension
         self.J_batch = overall_J
         self.H_batch = overall_H
@@ -649,7 +629,10 @@ class Network:
         A_third_exp = np.where(np.abs(A_third[:, :, None]) < epsilon, epsilon, A_third[:, :, None])
 
         # propagated_H = w_{jq}^L H_{qk}^{L-1}
-        propagated_H = np.einsum('jq, bqk -> bjk', final_w, self.H_Lminus1)
+        if not hasattr(self, 'H_Lminus1') or self.H_Lminus1 == 0:
+            propagated_H = 0
+        else:
+            propagated_H = np.einsum('jq, bqk -> bjk', final_w, self.H_Lminus1)
 
         # dJ/da^L = (A_double/(A_prime^2)) ⊙ overall_J_batch.
         dJ_da_batch = (A_double_exp / (A_prime_exp**2)) * self.J_batch

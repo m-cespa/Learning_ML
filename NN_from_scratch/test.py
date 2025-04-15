@@ -144,16 +144,8 @@ if __name__ == "__main__":
     # Link layers sequentially
     network = Network(layers=[input_layer,
                        input_activation,
-                       Layer(size=4),
-                       ActivationLayer(ELU()),
-                       Layer(size=8),
-                       ActivationLayer(ELU()),
-                       Layer(size=16),
-                       ActivationLayer(ELU()),
-                       Layer(size=8),
-                       ActivationLayer(ELU()),
-                       output_layer,
-                       output_activation],
+                       Layer(size=1),
+                       ActivationLayer(Linear())],
                        physics_loss_weight=0.001,
                        optim=Adam())
 
@@ -166,22 +158,37 @@ if __name__ == "__main__":
     # )
 
     learn_data = generate_test_data(
-        total_samples=500,
+        total_samples=1000,
         batch_dim=batch_dim,
-        domain=[(0, 2*np.pi), (0, 2*np.pi)],
+        domain=[(0, 10), (0, 10)],
         input_size=2,
-        func= lambda x: np.sin(x[0]) * np.cos(x[1])
+        func= lambda x: 3*x[0] + 4*x[1]
     )
 
     collocation_data = generate_collocation_data(N=200, k=1., L=5.)
     boundary_data = generate_boundary_data(N=200, k=1., L=5.)
 
     # Print shapes of the first label and input tensors to verify correctness
-    print(f"Shape of label tensor: {learn_data[0][1].shape}")  # Should be (batch_dim, output_size)
-    print(f"Shape of input tensor: {learn_data[0][0].shape}")  # Should be (batch_dim, input_size)
+    # print(f"Shape of label tensor: {learn_data[0][1].shape}")  # Should be (batch_dim, output_size)
+    # print(f"Shape of input tensor: {learn_data[0][0].shape}")  # Should be (batch_dim, input_size)
     
-    network.learn(learn_data=learn_data, lr=0.001, epochs=200, loss_func='mse', 
-                  collocation_data=None, boundary_data=boundary_data, plot=True, store_grads=True)
+    # network.learn(learn_data=learn_data, lr=0.001, epochs=100, loss_func='mse', 
+    #               collocation_data=None, boundary_data=boundary_data, plot=True, store_grads=True)
+
+    # for layer in network.layers:
+    #     if isinstance(layer, Layer):
+    #         print(f"W: {layer.W}")
+    #         print(f"B: {layer.B}")
+
+    # network.save_parameters(file_path='linear_network.npz')
+
+    linear_network = Network(
+        layers=[Layer(size=2), ActivationLayer(Linear()),
+                Layer(size=1), ActivationLayer(Linear())],
+                optim=Adam()
+    )
+
+    linear_network.load_parameters(file_path='linear_network.npz')
 
     # # Parameters
     # k = 1.0
@@ -239,3 +246,133 @@ if __name__ == "__main__":
     # plt.tight_layout()
     # plt.show()
 
+    def compute_errors_over_domain(net, N: int = 100, h: float = 1e-5):
+        x_vals = np.linspace(0, 10, N)
+        y_vals = np.linspace(0, 10, N)
+        X, Y = np.meshgrid(x_vals, y_vals)
+        
+        error_J     = np.zeros((N, N))
+        error_H     = np.zeros((N, N))
+        error_dJ_da = np.zeros((N, N))
+        error_dH_da = np.zeros((N, N))
+        
+        # Arrays to store all analytical and numerical values for averaging.
+        analytical_J     = []
+        analytical_H     = []
+        analytical_dJ_da = []
+        analytical_dH_da = []
+        
+        numerical_J     = []
+        numerical_H     = []
+        numerical_dJ_da = []
+        numerical_dH_da = []
+                
+        for i in range(N):
+            for j in range(N):
+                inp = np.array([[X[i, j], Y[i, j]]], dtype=np.float64)
+                
+                # Forward pass and autograd.
+                _ = net.forward(inp, store_grads=True)
+                net.autograd()        # Updates net.J_batch, net.H_batch.
+                net.autograd_derivs() # Updates net.dJ_da, net.dH_da.
+                
+                # Autograd results.
+                autograd_J     = np.squeeze(net.J_batch)
+                autograd_H     = np.squeeze(net.H_batch)
+                autograd_dJ_da = np.squeeze(net.dJ_da)
+                autograd_dH_da = np.squeeze(net.dH_da)
+                
+                # Numerical results.
+                numJ, numH, num_dJ_da, num_dH_da = net.numerical_jacobian_hessian(inp, h=h)
+                numJ     = np.squeeze(numJ)
+                numH     = np.squeeze(numH)
+                num_dJ_da = np.squeeze(num_dJ_da)
+                num_dH_da = np.squeeze(num_dH_da)
+                
+                # Store for averaging.
+                analytical_J.append(autograd_J)
+                analytical_H.append(autograd_H)
+                analytical_dJ_da.append(autograd_dJ_da)
+                analytical_dH_da.append(autograd_dH_da)
+                
+                numerical_J.append(numJ)
+                numerical_H.append(numH)
+                numerical_dJ_da.append(num_dJ_da)
+                numerical_dH_da.append(num_dH_da)
+                
+                # Compute errors.
+                error_J[i, j]     = np.linalg.norm(autograd_J - numJ)
+                error_H[i, j]     = np.linalg.norm(autograd_H - numH)
+                error_dJ_da[i, j] = np.linalg.norm(autograd_dJ_da - num_dJ_da)
+                error_dH_da[i, j] = np.linalg.norm(autograd_dH_da - num_dH_da)
+        
+        # Compute means.
+        mean_analytical = {
+            'J': np.mean(analytical_J, axis=0),
+            'H': np.mean(analytical_H, axis=0),
+            'dJ_da': np.mean(analytical_dJ_da, axis=0),
+            'dH_da': np.mean(analytical_dH_da, axis=0),
+        }
+        
+        mean_numerical = {
+            'J': np.mean(numerical_J, axis=0),
+            'H': np.mean(numerical_H, axis=0),
+            'dJ_da': np.mean(numerical_dJ_da, axis=0),
+            'dH_da': np.mean(numerical_dH_da, axis=0),
+        }
+                
+        # Plotting
+        plt.figure(figsize=(16, 12))
+
+        # Jacobian Error
+        plt.subplot(2, 2, 1)
+        plt.contourf(X, Y, error_J, levels=50, cmap='viridis')
+        plt.colorbar()
+        plt.title("L2 Error of Jacobian Estimates (J)")
+        plt.xlabel("$x_1$")
+        plt.ylabel("$x_2$")
+        plt.text(0.05, 0.9, 
+                f"Analytical J: {mean_analytical['J']}\nNumerical J: {mean_numerical['J']}", 
+                transform=plt.gca().transAxes, fontsize=9, color='white', 
+                bbox=dict(facecolor='black', alpha=0.6))
+
+        # Hessian Error
+        plt.subplot(2, 2, 2)
+        plt.contourf(X, Y, error_H, levels=50, cmap='magma')
+        plt.colorbar()
+        plt.title("L2 Error of Diagonal Hessian Estimates (H)")
+        plt.xlabel("$x_1$")
+        plt.ylabel("$x_2$")
+        plt.text(0.05, 0.9, 
+                f"Analytical H: {mean_analytical['H']}\nNumerical H: {mean_numerical['H']}", 
+                transform=plt.gca().transAxes, fontsize=9, color='white', 
+                bbox=dict(facecolor='black', alpha=0.6))
+
+        # dJ/da Error
+        plt.subplot(2, 2, 3)
+        plt.contourf(X, Y, error_dJ_da, levels=50, cmap='cividis')
+        plt.colorbar()
+        plt.title("L2 Error of dJ/da Estimates")
+        plt.xlabel("$x_1$")
+        plt.ylabel("$x_2$")
+        plt.text(0.05, 0.9, 
+                f"Analytical dJ/da: {mean_analytical['dJ_da']}\nNumerical dJ/da: {mean_numerical['dJ_da']}", 
+                transform=plt.gca().transAxes, fontsize=9, color='white', 
+                bbox=dict(facecolor='black', alpha=0.6))
+
+        # dH/da Error
+        plt.subplot(2, 2, 4)
+        plt.contourf(X, Y, error_dH_da, levels=50, cmap='plasma')
+        plt.colorbar()
+        plt.title("L2 Error of dH/da Estimates")
+        plt.xlabel("$x_1$")
+        plt.ylabel("$x_2$")
+        plt.text(0.05, 0.9, 
+                f"Analytical dH/da: {mean_analytical['dH_da']}\nNumerical dH/da: {mean_numerical['dH_da']}", 
+                transform=plt.gca().transAxes, fontsize=9, color='white', 
+                bbox=dict(facecolor='black', alpha=0.6))
+
+        plt.tight_layout()
+        plt.show()
+
+    compute_errors_over_domain(net=linear_network)
