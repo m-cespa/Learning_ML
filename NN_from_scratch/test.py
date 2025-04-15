@@ -139,112 +139,182 @@ if __name__ == "__main__":
     input_activation = ActivationLayer(Linear())
 
     output_layer = Layer(size=output_size)
-    output_activation = ActivationLayer(Tanh())
+    output_activation = ActivationLayer(Linear())
 
     # Link layers sequentially
     network = Network(layers=[input_layer,
                        input_activation,
-                       Layer(size=1),
-                       ActivationLayer(Linear())],
+                       Layer(size=8),
+                       ActivationLayer(ELU()),
+                       Layer(size=16),
+                       ActivationLayer(ELU()),
+                       Layer(size=16),
+                       ActivationLayer(ELU()),
+                       Layer(size=8),
+                       ActivationLayer(ELU()),
+                       output_layer,
+                       output_activation],
                        physics_loss_weight=0.001,
                        optim=Adam())
 
     # Generate XOR training data with batch and channel dimensions
-    # learn_data = generate_heat_eq_data(
-    #     total_samples=200,
+
+    # learn_data = generate_test_data(
+    #     total_samples=1000,
     #     batch_dim=batch_dim,
-    #     k=1.,
-    #     L=5.
+    #     domain=[(0, 10), (0, 10)],
+    #     input_size=2,
+    #     func= lambda x: 3*x[0] + 4*x[1]
     # )
 
-    learn_data = generate_test_data(
-        total_samples=1000,
-        batch_dim=batch_dim,
-        domain=[(0, 10), (0, 10)],
-        input_size=2,
-        func= lambda x: 3*x[0] + 4*x[1]
-    )
+    # --- Define the toy heat equation parameters and ground truth function ---
+    def heat_eq_true(x, t, k=1., L=5.):
+        """
+        Analytical solution of the heat equation for the given toy problem:
+        u(x,t) = 6 * sin(pi*x/L) * exp(-t*(k*pi/L)**2)
+        """
+        return 6 * np.sin(np.pi * x / L) * np.exp(-t * (k * np.pi / L)**2)
 
+    # --- Generate training and evaluation data ---
+    # Assume these functions already exist from your provided code.
+    learn_data = generate_heat_eq_data(total_samples=500, batch_dim=5, k=1., L=5.)
     collocation_data = generate_collocation_data(N=200, k=1., L=5.)
-    boundary_data = generate_boundary_data(N=200, k=1., L=5.)
+    boundary_data = generate_boundary_data(N=100, k=1., L=5.)
 
-    # Print shapes of the first label and input tensors to verify correctness
-    # print(f"Shape of label tensor: {learn_data[0][1].shape}")  # Should be (batch_dim, output_size)
-    # print(f"Shape of input tensor: {learn_data[0][0].shape}")  # Should be (batch_dim, input_size)
-    
-    # network.learn(learn_data=learn_data, lr=0.001, epochs=100, loss_func='mse', 
-    #               collocation_data=None, boundary_data=boundary_data, plot=True, store_grads=True)
+    # Maximum training time T from your data generation:
+    T = 2 / (1. * (np.pi / 5.)**2)
+    L_val = 5.
+    # Create x grid for evaluation (200 points along the interval [0, L])
+    x_vals = np.linspace(0, L_val, 200)
 
-    # for layer in network.layers:
-    #     if isinstance(layer, Layer):
-    #         print(f"W: {layer.W}")
-    #         print(f"B: {layer.B}")
+    # --- Setup CSV Logging ---
+    csv_filename = "pinn_vs_nn_results.csv"
+    with open(csv_filename, mode='w', newline='') as csv_file:
+        fieldnames = ['model_type', 'epochs', 'runtime_sec', 'error_alpha1', 'error_alpha1.5', 'error_alpha2']
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
 
-    # network.save_parameters(file_path='linear_network.npz')
+        # --- Define a helper to evaluate model accuracy ---
+        def evaluate_model(model, alpha, k=1., L=5.):
+            """
+            Evaluate the trained model at t = alpha * T over x in [0, L].
+            Returns the mean squared error against the true solution.
+            """
+            t_val = alpha * T
+            # Create evaluation input: each row is [x, t]
+            X_eval = np.vstack((x_vals, np.full_like(x_vals, t_val))).T  # shape: (200,2)
+            # Get the prediction; assuming model.forward supports batching as described.
+            pred = model.forward(input_data=X_eval, store_grads=False)
+            pred = np.squeeze(pred)  # shape: (200,)
+            # Compute true values
+            true_val = heat_eq_true(x_vals, t_val, k=k, L=L)
+            # Return mean squared error
+            mse = np.mean((pred - true_val)**2)
+            return mse
 
-    linear_network = Network(
-        layers=[Layer(size=2), ActivationLayer(Linear()),
-                Layer(size=1), ActivationLayer(Linear())],
-                optim=Adam()
-    )
+        # --- Loop over experiment configurations ---
+        # We define the list of epoch values.
+        epoch_list = list(range(10, 101, 10))
+        # Two configurations: one for the PINN and one for regular NN.
+        for model_type, colloc_data in [('PINN', collocation_data), ('NN', None)]:
+            print(f"Starting experiments for model type: {model_type}")
+            for epochs in epoch_list:
+                # Reset or reinitialize your network here if needed.
+                # For example: network.reset_weights()  or construct a new model instance.
+                #
+                # Start timing training
+                t0 = time.time()
+                
+                # Train the model: use colloc_data for PINN, or None for a regular NN.
+                network.learn(
+                    learn_data=learn_data,
+                    lr=0.001,
+                    epochs=epochs,
+                    loss_func='mse',
+                    collocation_data=colloc_data,
+                    boundary_data=boundary_data,
+                    plot=False,
+                    store_grads=True
+                )
+                
+                runtime_sec = time.time() - t0
+                
+                # Evaluate on t = alpha * T for alpha=1, 1.5, 2.
+                error_alpha1   = evaluate_model(network, alpha=1)
+                error_alpha15  = evaluate_model(network, alpha=1.5)
+                error_alpha2   = evaluate_model(network, alpha=2)
+                
+                # Log the results:
+                writer.writerow({
+                    'model_type': model_type,
+                    'epochs': epochs,
+                    'runtime_sec': runtime_sec,
+                    'error_alpha1': error_alpha1,
+                    'error_alpha1.5': error_alpha15,
+                    'error_alpha2': error_alpha2
+                })
+                
+                print(f"[{model_type}] Epochs: {epochs}, Runtime: {runtime_sec:.2f} sec, "
+                    f"Errors: (α=1: {error_alpha1:.4f}, α=1.5: {error_alpha15:.4f}, α=2: {error_alpha2:.4f})")
+                
+                # Optionally: Save model state or reset network weights before next experiment, if needed.
 
-    linear_network.load_parameters(file_path='linear_network.npz')
 
-    # # Parameters
-    # k = 1.0
-    # L = 5.0
-    # # Define T such that t in [0, T] covers the intended training time.
-    # T = 2 / ((np.pi / L)**2)
+    # Parameters
+    k = 1.0
+    L = 5.0
+    # Define T such that t in [0, T] covers the intended training time.
+    T = 2 / ((np.pi / L)**2)
 
-    # # Define the analytic solution:
-    # def analytic_u(x, t):
-    #     # x: numpy array, t: scalar
-    #     return 6 * np.sin(np.pi * x / L) * np.exp(-t * (k * np.pi / L)**2)
+    # Define the analytic solution:
+    def analytic_u(x, t):
+        # x: numpy array, t: scalar
+        return 6 * np.sin(np.pi * x / L) * np.exp(-t * (k * np.pi / L)**2)
 
-    # # Generate a dense grid of x values covering [0, 2L] for visualization
-    # x_vals = np.linspace(0, L, 200)
+    # Generate a dense grid of x values covering [0, 2L] for visualization
+    x_vals = np.linspace(0, L, 200)
 
-    # # Choose time instances.
-    # # 4 times uniformly in [0, T] and 2 times uniformly in [T, T+5]
-    # times_inside = np.linspace(0, T, 3)
-    # times_outside = np.linspace(T+3, T+3, 1)
-    # all_times = np.concatenate((times_inside, times_outside))
+    # Choose time instances.
+    # 4 times uniformly in [0, T] and 2 times uniformly in [T, T+5]
+    times_inside = np.linspace(0, T, 3)
+    times_outside = np.linspace(1.5*T, 1.5*T, 1)
+    all_times = np.concatenate((times_inside, times_outside))
 
-    # # Create the figure and axis (one single plot)
-    # plt.figure(figsize=(8, 6))
-    # ax = plt.gca()
+    # Create the figure and axis (one single plot)
+    plt.figure(figsize=(8, 6))
+    ax = plt.gca()
 
-    # # Define a set of colors using a colormap for clarity.
-    # colors = plt.cm.viridis(np.linspace(0, 1, len(all_times)))
+    # Define a set of colors using a colormap for clarity.
+    colors = plt.cm.viridis(np.linspace(0, 1, len(all_times)))
 
-    # # Loop over each time instance, plot both analytic and network curves.
-    # for idx, t in enumerate(all_times):
-    #     # For each t, create a batch input with shape (200,2): each row is [x, t]
-    #     X = np.vstack((x_vals, np.full_like(x_vals, t))).T  # shape (200, 2)
+    # Loop over each time instance, plot both analytic and network curves.
+    for idx, t in enumerate(all_times):
+        # For each t, create a batch input with shape (200,2): each row is [x, t]
+        X = np.vstack((x_vals, np.full_like(x_vals, t))).T  # shape (200, 2)
         
-    #     # Get network prediction:
-    #     pred = network.forward(input_data=X, store_grads=False)  # expected shape (200,1)
-    #     pred = np.squeeze(pred)  # shape (200,)
+        # Get network prediction:
+        pred = network.forward(input_data=X, store_grads=False)  # expected shape (200,1)
+        pred = np.squeeze(pred)  # shape (200,)
         
-    #     # Compute ground truth from the analytic solution
-    #     gt = analytic_u(x_vals, t)
+        # Compute ground truth from the analytic solution
+        gt = analytic_u(x_vals, t)
         
-    #     # Plot analytic solution as a solid line, network prediction as dashed.
-    #     # Label only one representative label per time.
-    #     ax.plot(x_vals, gt, color=colors[idx], linestyle='-', linewidth=2,
-    #             label=f"Analytic, t={t:.2f}")
-    #     ax.plot(x_vals, pred, color=colors[idx], linestyle='--', linewidth=2,
-    #             label=f"Network, t={t:.2f}")
+        # Plot analytic solution as a solid line, network prediction as dashed.
+        # Label only one representative label per time.
+        ax.plot(x_vals, gt, color=colors[idx], linestyle='-', linewidth=2,
+                label=f"Analytic, t={t:.2f}")
+        ax.plot(x_vals, pred, color=colors[idx], linestyle='--', linewidth=2,
+                label=f"Network, t={t:.2f}")
 
-    # # Improve the plot
-    # ax.set_title(r"Network vs Analytic Solution$", fontsize=16)
-    # ax.set_xlabel(r"$x$", fontsize=14)
-    # ax.set_ylabel(r"$u(x,t)$", fontsize=14)
-    # ax.legend(fontsize=10, loc='upper right', ncol=2)
-    # ax.grid(True)
+    # Improve the plot
+    ax.set_title(r"Network vs Analytic Solution$", fontsize=16)
+    ax.set_xlabel(r"$x$", fontsize=14)
+    ax.set_ylabel(r"$u(x,t)$", fontsize=14)
+    ax.legend(fontsize=10, loc='upper right', ncol=2)
+    ax.grid(True)
 
-    # plt.tight_layout()
-    # plt.show()
+    plt.tight_layout()
+    plt.show()
 
     def compute_errors_over_domain(net, N: int = 100, h: float = 1e-5):
         x_vals = np.linspace(0, 10, N)
@@ -375,4 +445,3 @@ if __name__ == "__main__":
         plt.tight_layout()
         plt.show()
 
-    compute_errors_over_domain(net=linear_network)

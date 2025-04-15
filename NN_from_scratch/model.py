@@ -595,10 +595,6 @@ class Network:
                 if layer == self.layers[-4]:
                     self.H_Lminus1 = overall_H
 
-        # for networks of 4 total layers (input -> output), H_Lminus1 is 0 by default:
-        if not hasattr(self, 'H_Lminus1'):
-            self.H_Lminus1 = 0
-
         # average over batch dimension
         self.J_batch = overall_J
         self.H_batch = overall_H
@@ -629,7 +625,8 @@ class Network:
         A_third_exp = np.where(np.abs(A_third[:, :, None]) < epsilon, epsilon, A_third[:, :, None])
 
         # propagated_H = w_{jq}^L H_{qk}^{L-1}
-        if not hasattr(self, 'H_Lminus1') or self.H_Lminus1 == 0:
+        # if non-existent, we are dealing with a 4-layer network
+        if not hasattr(self, 'H_Lminus1'):
             propagated_H = 0
         else:
             propagated_H = np.einsum('jq, bqk -> bjk', final_w, self.H_Lminus1)
@@ -761,7 +758,7 @@ class Network:
 
     @staticmethod
     def adaptive_lr_schedule(current_lr: float) -> float:
-        return current_lr * 0.999
+        return current_lr * 0.99
 
     def learn(self, learn_data: List[Tuple[np.ndarray, np.ndarray]], lr: float, epochs: int, loss_func: str, 
               collocation_data=None, boundary_data=None, plot: bool=False, store_grads: bool=False) -> None:
