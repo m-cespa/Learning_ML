@@ -12,6 +12,16 @@ class Linear:
     def derivative(self, x: np.ndarray) -> np.ndarray:
         return np.ones_like(x)
     
+class Quadratic:
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        return x**2
+    
+    def derivative(self, x: np.ndarray) -> np.ndarray:
+        return 2*x
+    
+    def second_deriv(self, x: np.ndarray) -> np.ndarray:
+        return 2*np.ones_like(x)
+    
 class ReLU:
     def __call__(self, x: np.ndarray) -> np.ndarray:
         return np.maximum(0, np.array(x))
@@ -407,7 +417,7 @@ class Lion(Optimizer):
             layer.mW = np.zeros_like(layer.W)
             layer.mB = np.zeros_like(layer.B)
         
-        # assume most recent (averaged) gradients are in dW and dB
+        # most recent (batch averaged) gradients are in layer.W_grad and layer.B_grad
         layer.mW = self.beta * layer.mW + (1 - self.beta) * layer.W_grad
         layer.mB = self.beta * layer.mB + (1 - self.beta) * layer.B_grad
         
@@ -493,39 +503,85 @@ class Network:
         x = np.clip(x, 1e-15, 1 - 1e-15)
         return -np.sum(y * np.log(x), axis=-1)
     
-    def numerical_jacobian_hessian(self, X: np.ndarray, h: float = 1e-5) -> Tuple[np.ndarray, np.ndarray]:
+    def numerical_jacobian_hessian(self, X: np.ndarray, h: float = 1e-5) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Computes higher–accuracy numerical approximations for:
+        - the Jacobian (J) ≈ u'(x) using a fourth–order five–point formula
+        - the diagonal Hessian (H) ≈ u''(x) using a fourth–order five–point formula
+        - the derivative of J with respect to the output activation (dJ/da) ≈ u''(x)/u'(x)
+        - the derivative of H with respect to the output activation (dH/da) ≈ u'''(x)/u'(x)
+        
+        Parameters:
+        X (np.ndarray): Input array of shape (batch, input_dim).
+        h (float): Perturbation step size.
+        
+        Returns:
+        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+            - jacobian:     shape (batch, input_dim)
+            - hessian_diag: shape (batch, input_dim)
+            - dJ_da:        derivative of J with respect to activation, shape (batch, input_dim)
+            - dH_da:        derivative of H with respect to activation, shape (batch, input_dim)
+        """
         # Evaluate the network at the original inputs.
-        u0 = self.forward(X, store_grads=False)   # shape: (batch, 1)
+        u0 = self.forward(X, store_grads=False)  # u0; shape: (batch, 1)
         batch = X.shape[0]
         
-        # Prepare empty arrays for the gradient and diagonal Hessian.
-        jacobian = np.zeros((batch, 2))
-        hessian_diag = np.zeros((batch, 2))
+        # Prepare arrays to store the results.
+        jacobian      = np.zeros((batch, 2))
+        hessian_diag  = np.zeros((batch, 2))
+        dJ_da         = np.zeros((batch, 2))
+        dH_da         = np.zeros((batch, 2))
         
-        # Loop over the 2 input dimensions.
+        # A small constant to avoid division by zero.
+        eps = 1e-12
+        
         for j in range(2):
-            # Copy the original input array (shape: (batch, 2)) for perturbations.
-            X_plus = X.copy()
-            X_minus = X.copy()
+            # Create copies of X for the five points.
+            X_plus2  = X.copy()
+            X_plus   = X.copy()
+            X_minus  = X.copy()
+            X_minus2 = X.copy()
             
-            # Perturb the jth coordinate by +h and -h, respectively.
-            X_plus[:, j] += h
-            X_minus[:, j] -= h
+            # Perturb the j-th coordinate.
+            X_plus2[:, j]  += 2 * h
+            X_plus[:, j]   += h
+            X_minus[:, j]  -= h
+            X_minus2[:, j] -= 2 * h
             
-            # Evaluate the network at the perturbed inputs.
-            u_plus = self.forward(X_plus, store_grads=False)   # shape: (batch, 1)
-            u_minus = self.forward(X_minus, store_grads=False) # shape: (batch, 1)
+            # Evaluate the network at the five perturbed inputs.
+            u_plus2  = self.forward(X_plus2,  store_grads=False)  # shape: (batch, 1)
+            u_plus   = self.forward(X_plus,   store_grads=False)  # shape: (batch, 1)
+            u_minus  = self.forward(X_minus,  store_grads=False)  # shape: (batch, 1)
+            u_minus2 = self.forward(X_minus2, store_grads=False)  # shape: (batch, 1)
             
-            # Compute the jth component of the gradient via central difference:
-            # (u(x+h) - u(x-h)) / (2h)
-            jacobian[:, j] = ((u_plus - u_minus) / (2 * h)).reshape(batch)
+            # Fourth–order finite difference for the first derivative (Jacobian).
+            # J = (-u(x+2h) + 8u(x+h) - 8u(x-h) + u(x-2h)) / (12h)
+            J_4 = (-u_plus2 + 8*u_plus - 8*u_minus + u_minus2) / (12 * h)
             
-            # Compute the jth diagonal term of the Hessian using central difference:
-            # (u(x+h) - 2u(x) + u(x-h)) / (h^2)
-            hessian_diag[:, j] = ((u_plus - 2 * u0 + u_minus) / (h ** 2)).reshape(batch)
-        
-        return jacobian, hessian_diag
+            # Fourth–order finite difference for the second derivative (diagonal Hessian).
+            # H = (-u(x+2h) + 16u(x+h) - 30u(x) + 16u(x-h) - u(x-2h)) / (12h^2)
+            H_4 = (-u_plus2 + 16*u_plus - 30*u0 + 16*u_minus - u_minus2) / (12 * h**2)
             
+            # Fifth–order approximation: Use the fourth order approximations for u'(x) and u''(x)
+            # and then, using a chain–rule perspective, define:
+            # dJ/da ≈ u''(x)/u'(x) = H_4 / J_4.
+            # (This gives a dimensionless sensitivity.)
+            dJ = H_4 / (J_4 + eps)
+            
+            # For the third derivative, use a 4th–order five–point stencil:
+            # u'''(x) ≈ (-u(x+2h) + 2u(x+h) - 2u(x-h) + u(x-2h)) / (2h^3)
+            T_4 = (-u_plus2 + 2*u_plus - 2*u_minus + u_minus2) / (2 * h**3)
+            # Then, define dH/da ≈ u'''(x)/u'(x) ≈ T_4 / J_4.
+            dH = T_4 / (J_4 + eps)
+            
+            # Store the results for the jth coordinate.
+            jacobian[:, j]     = np.squeeze(J_4)
+            hessian_diag[:, j] = np.squeeze(H_4)
+            dJ_da[:, j]        = np.squeeze(dJ)
+            dH_da[:, j]        = np.squeeze(dH)
+            
+        return jacobian, hessian_diag, dJ_da, dH_da
+ 
     def autograd(self) -> None:
         """
         Performs the iterative calculation for H and total J:
@@ -558,6 +614,11 @@ class Network:
                 # J^{l} = g_{layer} * J^{l-1}
                 overall_J = np.einsum('boi, bij -> boj', g_l, overall_J)
 
+                # if we are at the penultimate Layer object, save H^{L-1}
+                # assumes all Layers are followed by ActivationLayer including output
+                if layer == self.layers[-4]:
+                    self.H_Lminus1 = overall_H
+
         # average over batch dimension
         self.J_batch = overall_J
         self.H_batch = overall_H
@@ -569,8 +630,11 @@ class Network:
 
         NOTE: mathematical derivations in accompanying pdf
         """
+        # final layer is an Activation
         final_layer = self.layers[-1]
+        # previous layer to final is Layer
         final_z = self.layers[-2].z
+        final_w = self.layers[-2].W
 
         A_prime = final_layer.derivative(final_z)       # shape (batch, out_dim)
         A_double = final_layer.second_deriv(final_z)    # shape (batch, out_dim)
@@ -584,11 +648,8 @@ class Network:
         A_double_exp = np.where(np.abs(A_double[:, :, None]) < epsilon, epsilon, A_double[:, :, None])
         A_third_exp = np.where(np.abs(A_third[:, :, None]) < epsilon, epsilon, A_third[:, :, None])
 
-        # overall_J_batch = A_prime ⊙ directional_deriv
-        directional_deriv = self.J_batch / A_prime_exp
-
-        # overall_H_batch = A_double ⊙ (directional_deriv)^2 + A_prime ⊙ propagated_H
-        propagated_H = (self.H_batch - A_double_exp * directional_deriv**2) / A_prime_exp
+        # propagated_H = w_{jq}^L H_{qk}^{L-1}
+        propagated_H = np.einsum('jq, bqk -> bjk', final_w, self.H_Lminus1)
 
         # dJ/da^L = (A_double/(A_prime^2)) ⊙ overall_J_batch.
         dJ_da_batch = (A_double_exp / (A_prime_exp**2)) * self.J_batch
@@ -658,6 +719,8 @@ class Network:
                     layer.delta[None, :]
 
                 # average the parameter gradients over the batch dimension
+                # Δ(b^l_j) = δ_j
+                # Δ(w^l_ij) = δ_i a^{l-1}_j
                 layer.B_grad = np.sum(layer.delta, axis=0) / batch_dim
                 layer.W_grad = np.einsum('bi, bj -> ij', layer.delta, layer.previous.A) / batch_dim
 
@@ -698,8 +761,6 @@ class Network:
 
         # perform backpropagation
         self.backward_helper(error)
-
-        # assert loss.shape == (self.batch_dim,)
 
         for layer in self.layers[1:]:
             if isinstance(layer, Layer):
@@ -757,7 +818,7 @@ class Network:
             plt.xlabel(r'Epoch')
             plt.ylabel(r'Average Loss')
             plt.title(r'Training Loss Over Epochs')
-            # plt.savefig('sin_cos_loss.png', dpi=300)
+            plt.savefig('sin_cos_loss.png', dpi=300)
             plt.show()
 
     def save_parameters(self, file_path: str) -> None:
@@ -782,7 +843,7 @@ class Network:
         if not file_path.endswith('.npz'):
             raise ValueError('Invalid file extension for loading.')
 
-        params = np.load(file_path)
+        params = np.load(file_path, allow_pickle=True)
         for i, layer in enumerate(self.layers):
             if isinstance(layer, Layer):
                 layer.W = params[f'layer_{i}_W']
