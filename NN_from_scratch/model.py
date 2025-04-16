@@ -218,6 +218,7 @@ class Layer(BaseLayer):
         # calculate layer-to-layer Jacobian for autograd, leaving batch dimension
         if store_grads:
             self.activation_second_deriv = self.next.second_deriv(self.z)
+            self.activation_third_deriv = self.next.third_deriv(self.z)
             self.g = np.einsum('bj, jk -> bjk', self.activation_deriv, self.W)
 
     def backward(self, error: np.ndarray) -> np.ndarray:
@@ -641,6 +642,102 @@ class Network:
         self.dJ_da = dJ_da_batch   # shape: (batch_dim, out_dim, input_dim)
         self.dH_da = dH_da_batch   # shape: (batch_dim, out_dim, input_dim)
 
+    def autograd_new(self) -> List[np.ndarray]:
+        """
+        Performs the iterative calculation for:
+            J_{jk}^L: full Jacobian
+            H_{jkm}^L: full Hessian
+            dJ_{jk}^L/da_m^L: derivative of full Jacobian wrt output activations
+            dH_{jk}^L/da_m^L: derivative of diagonal Hessian wrt output activations
+                (only the diagonal Hessian is used in the Physics loss functions)
+        """
+        batch_size = self.layers[0].z.shape[0]
+        epsilon = 1e-8 # avoid zero division
+        # NOTE: let D denote the network input dimension throughout the below comments
+        D = self.input_dim
+
+        # build array recursively, so initialise them to their 0th layer components
+        overall_J = np.tile(np.eye(D)[None, :, :], (batch_size, 1, 1))
+        overall_H = np.zeros((batch_size, D, D, D))
+        diag_dH_da = np.zeros((batch_size, D, D, D))
+        # NOTE: the dJ/da array does not require recursive construction, it is computed after
+
+        retrieved_L_minus_1 = False
+
+        # NOTE: 0th layer won't have a 'g' (layer-to-layer Jacobian)
+        for layer in self.layers:
+            if isinstance(layer, Layer) and hasattr(layer, 'g'):
+
+                g_l = layer.g   # shape (batch, out_dim, in_dim)
+                # J^{l} = g_{l} * J^{l-1}
+
+                # recover required layer arrays
+                W = layer.W                                 # shape (out_dim, in_dim)
+                out_dim, in_dim_prev = W.shape
+                A_prime = layer.activation_deriv            # shape (batch, out_dim)       
+                A_double = layer.activation_second_deriv    # shape (batch, out_dim) 
+                A_triple = layer.activation_third_deriv     # shape (batch, out_dim)
+
+                # 'overall_J' is currently J^{l-1} with shape (batch, previous_layer_out, D)
+                H_term1 = np.einsum('bj, jq, bqm, bqk -> bjkm', A_double, W**2, overall_J, overall_J)
+                # 'overall_H' is currently H^{l-1} with shape (batch, previous_layer_out, D, D)
+                H_term2 = np.einsum('bj, jq, bqkm -> bjkm', A_prime, W, overall_H)
+                # NOTE: not updating overall_H yet because we need the H^{l-1} for dH_da
+
+                # δ_{jm}
+                delta_jm = np.eye(out_dim)
+
+                # Term 1: δ_{jm} * A'''/(A'^3) * (J_current)^2
+                factor1 = A_triple / (A_prime ** 3 + epsilon)
+                dH_term1 = np.einsum('jm, bj, jq, bqk -> bjkm', delta_jm, factor1, W**2, overall_J**2)
+
+                # NOTE: now we can update J
+                overall_J = np.einsum('boi, bij -> boj', g_l, overall_J)
+
+                # Term 2: Sum_{p,q} 2A'' * w_{jq} * H_prev_{qkp} / J_current_{mp}
+                temp_term2 = np.einsum('bj, jq, bqkp -> bjkp', A_double, W, overall_H)
+                dH_term2 = 2 * np.einsum('bjkp, bmp -> bjkm', temp_term2, 1 / (overall_J + epsilon))
+
+                # Term 3: Sum_q δ_{jm} * (A''/A') * w_{jq} * H_prev_{qk}
+                diag_H_prev = np.einsum('mk, bjmk -> bjk', np.eye(D), overall_H)
+                W_J_prev = np.einsum('jq, bqk -> bjk', W, diag_H_prev)
+                factor3 = A_double / A_prime
+                dH_term3 = np.einsum('jm, bj, bjk -> bjkm', delta_jm, factor3, W_J_prev)
+
+                # Term 4: Sum_q [ A' * w_{jq} * Sum_p (dH_prev_{qkp} / (A'_m * w_{mp})) ]
+                denominator = (A_prime[:, :, None] * W[None, :, :])  # (batch, m, p)
+                divided_term4 = np.einsum('bqkp, bmp -> bqkpm', diag_dH_da, 1 / (denominator + epsilon))
+                summed_term4 = np.sum(divided_term4, axis=3)  # Sum over p
+                dH_term4 = np.einsum('bj, jq, bqkm -> bjkm', A_prime, W, summed_term4)
+
+                # Sum all terms
+                dH_da = dH_term1 + dH_term2 + dH_term3 + dH_term4
+                diag_dH_da = dH_da
+
+                overall_H = H_term1 + H_term2
+
+                # need to store H^{L-1} for dJ/da:
+                if not retrieved_L_minus_1 and layer.next.next.next.next is None:
+                    # guarantee checking that we are on the L-1 layer
+                    self.overall_H_minus1 = overall_H
+                    retrieved_L_minus_1 = True
+
+        # compute dJ/da:
+        # Term 1: δ_{jm} A''(z_j^L)/[A'(z_m^L)]^2 * J_{jk}^L
+        term1_factor = A_double / (A_prime ** 2 + epsilon)  # shape (batch, out_dim)
+        dJ_term1 = np.einsum('jm, bj, bjk -> bjkm', delta_jm, term1_factor, overall_J)
+
+        # Term 2: A_prime[:, j] * w_{jq} * H_{qkr}^{L-1} / J_{mr}^L
+        numerator = np.einsum('bj, jq, bqkr -> bjkr', A_prime, W, self.overall_H_minus1)
+        dJ_term2 = np.einsum('bjkr, bmr -> bjkm', numerator, 1.0 / (overall_J + epsilon))
+
+        dJ_da = dJ_term1 + dJ_term2
+
+        # we only really care about the diagonal Hessian
+        diag_H = np.einsum('mk, bjmk -> bjk', np.eye(D), overall_H)
+
+        return overall_J, diag_H, dJ_da, diag_dH_da
+
     def physics_loss(self, collocation_data, boundary_data) -> List[np.ndarray]:
         """
         Calculates the Physics Loss as k*d^2u/dx^2 - du/dt (= 0 in theory)
@@ -654,15 +751,16 @@ class Network:
         """
         k, L, collocation_data = collocation_data
         self.forward(input_data=collocation_data, store_grads=True)
-        self.autograd()
-        self.autograd_derivs()
+        
+        J, H, dJ_da, dH_da = self.autograd_new()
 
         # expect all the J, H and derivatives to be shape (N_colloc, output_dim, input_dim)
-        du_dt = np.squeeze(self.J_batch[:, :, 1])
-        d2u_dx2 = np.squeeze(self.H_batch[:, :, 0])
+        # x is 0th index, t is 1st
+        du_dt = np.squeeze(J[:, :, 1])
+        d2u_dx2 = np.squeeze(H[:, :, 0])
 
-        dJ_t_da = np.squeeze(self.dJ_da[:, :, 1])
-        dH_x_da = np.squeeze(self.dH_da[:, :, 0])
+        dJ_t_da = np.squeeze(dJ_da[:, :, 1, :])
+        dH_x_da = np.squeeze(dH_da[:, :, 0, :])
 
         # loss includes boundary conditions and ICs
         ics_bcs = self.forward(input_data=boundary_data, store_grads=True)

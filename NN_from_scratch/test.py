@@ -91,7 +91,7 @@ def generate_collocation_data(N: int, k: float, L: float):
 
 
 def generate_boundary_data(N: int, k: float, L: float):
-    T = 2 / (k * (np.pi / L)**2)  # Maximum time
+    T = 1 / (k * (np.pi / L)**2)  # Maximum time
 
     # u(x,0): x in [0, L], t = 0.
     # u(0,t): t in [0, T], x = 0.
@@ -144,17 +144,17 @@ if __name__ == "__main__":
     # Link layers sequentially
     network = Network(layers=[input_layer,
                        input_activation,
+                       Layer(size=4),
+                       ActivationLayer(ELU()),
                        Layer(size=8),
                        ActivationLayer(ELU()),
                        Layer(size=16),
                        ActivationLayer(ELU()),
-                       Layer(size=16),
-                       ActivationLayer(ELU()),
-                       Layer(size=8),
+                       Layer(size=4),
                        ActivationLayer(ELU()),
                        output_layer,
                        output_activation],
-                       physics_loss_weight=0.001,
+                       physics_loss_weight=1e-6,
                        optim=Adam())
 
     # Generate XOR training data with batch and channel dimensions
@@ -177,87 +177,97 @@ if __name__ == "__main__":
 
     # --- Generate training and evaluation data ---
     # Assume these functions already exist from your provided code.
-    learn_data = generate_heat_eq_data(total_samples=500, batch_dim=5, k=1., L=5.)
-    collocation_data = generate_collocation_data(N=200, k=1., L=5.)
-    boundary_data = generate_boundary_data(N=100, k=1., L=5.)
+    learn_data = generate_heat_eq_data(total_samples=100, batch_dim=batch_dim, k=1., L=5.)
+    collocation_data = generate_collocation_data(N=50, k=1., L=5.)
+    boundary_data = generate_boundary_data(N=50, k=1., L=5.)
 
-    # Maximum training time T from your data generation:
-    T = 2 / (1. * (np.pi / 5.)**2)
-    L_val = 5.
-    # Create x grid for evaluation (200 points along the interval [0, L])
-    x_vals = np.linspace(0, L_val, 200)
+    network.learn(learn_data=learn_data, lr=0.001, epochs=100, loss_func='mse', store_grads=True,
+                  collocation_data=collocation_data, boundary_data=boundary_data, plot=True)
+    
+    J, H, dJ, dH = network.autograd_new()
 
-    # --- Setup CSV Logging ---
-    csv_filename = "pinn_vs_nn_results.csv"
-    with open(csv_filename, mode='w', newline='') as csv_file:
-        fieldnames = ['model_type', 'epochs', 'runtime_sec', 'error_alpha1', 'error_alpha1.5', 'error_alpha2']
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        writer.writeheader()
+    print(J)
+    print(H)
+    print(dJ)
+    print(dH)
 
-        # --- Define a helper to evaluate model accuracy ---
-        def evaluate_model(model, alpha, k=1., L=5.):
-            """
-            Evaluate the trained model at t = alpha * T over x in [0, L].
-            Returns the mean squared error against the true solution.
-            """
-            t_val = alpha * T
-            # Create evaluation input: each row is [x, t]
-            X_eval = np.vstack((x_vals, np.full_like(x_vals, t_val))).T  # shape: (200,2)
-            # Get the prediction; assuming model.forward supports batching as described.
-            pred = model.forward(input_data=X_eval, store_grads=False)
-            pred = np.squeeze(pred)  # shape: (200,)
-            # Compute true values
-            true_val = heat_eq_true(x_vals, t_val, k=k, L=L)
-            # Return mean squared error
-            mse = np.mean((pred - true_val)**2)
-            return mse
+    # # Maximum training time T from your data generation:
+    # T = 1 / (1. * (np.pi / 5.)**2)
+    # L_val = 5.
+    # # Create x grid for evaluation (200 points along the interval [0, L])
+    # x_vals = np.linspace(0, L_val, 200)
 
-        # --- Loop over experiment configurations ---
-        # We define the list of epoch values.
-        epoch_list = list(range(10, 101, 10))
-        # Two configurations: one for the PINN and one for regular NN.
-        for model_type, colloc_data in [('PINN', collocation_data), ('NN', None)]:
-            print(f"Starting experiments for model type: {model_type}")
-            for epochs in epoch_list:
-                # Reset or reinitialize your network here if needed.
-                # For example: network.reset_weights()  or construct a new model instance.
-                #
-                # Start timing training
-                t0 = time.time()
+    # # --- Setup CSV Logging ---
+    # csv_filename = "pinn_vs_nn_results.csv"
+    # with open(csv_filename, mode='w', newline='') as csv_file:
+    #     fieldnames = ['model_type', 'epochs', 'runtime_sec', 'error_alpha1', 'error_alpha1.5', 'error_alpha2']
+    #     writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+    #     writer.writeheader()
+
+    #     # --- Define a helper to evaluate model accuracy ---
+    #     def evaluate_model(model, alpha, k=1., L=5.):
+    #         """
+    #         Evaluate the trained model at t = alpha * T over x in [0, L].
+    #         Returns the mean squared error against the true solution.
+    #         """
+    #         t_val = alpha * T
+    #         # Create evaluation input: each row is [x, t]
+    #         X_eval = np.vstack((x_vals, np.full_like(x_vals, t_val))).T  # shape: (200,2)
+    #         # Get the prediction; assuming model.forward supports batching as described.
+    #         pred = model.forward(input_data=X_eval, store_grads=False)
+    #         pred = np.squeeze(pred)  # shape: (200,)
+    #         # Compute true values
+    #         true_val = heat_eq_true(x_vals, t_val, k=k, L=L)
+    #         # Return mean squared error
+    #         mse = np.mean((pred - true_val)**2)
+    #         return mse
+
+    #     # --- Loop over experiment configurations ---
+    #     # We define the list of epoch values.
+    #     epoch_list = list(range(10, 101, 10))
+    #     # Two configurations: one for the PINN and one for regular NN.
+    #     for model_type, colloc_data in [('PINN', collocation_data), ('NN', None)]:
+    #         print(f"Starting experiments for model type: {model_type}")
+    #         for epochs in epoch_list:
+    #             # Reset or reinitialize your network here if needed.
+    #             # For example: network.reset_weights()  or construct a new model instance.
+    #             #
+    #             # Start timing training
+    #             t0 = time.time()
                 
-                # Train the model: use colloc_data for PINN, or None for a regular NN.
-                network.learn(
-                    learn_data=learn_data,
-                    lr=0.001,
-                    epochs=epochs,
-                    loss_func='mse',
-                    collocation_data=colloc_data,
-                    boundary_data=boundary_data,
-                    plot=False,
-                    store_grads=True
-                )
+    #             # Train the model: use colloc_data for PINN, or None for a regular NN.
+    #             network.learn(
+    #                 learn_data=learn_data,
+    #                 lr=0.001,
+    #                 epochs=epochs,
+    #                 loss_func='mse',
+    #                 collocation_data=colloc_data,
+    #                 boundary_data=boundary_data,
+    #                 plot=False,
+    #                 store_grads=True
+    #             )
                 
-                runtime_sec = time.time() - t0
+    #             runtime_sec = time.time() - t0
                 
-                # Evaluate on t = alpha * T for alpha=1, 1.5, 2.
-                error_alpha1   = evaluate_model(network, alpha=1)
-                error_alpha15  = evaluate_model(network, alpha=1.5)
-                error_alpha2   = evaluate_model(network, alpha=2)
+    #             # Evaluate on t = alpha * T for alpha=1, 1.5, 2.
+    #             error_alpha1   = evaluate_model(network, alpha=1)
+    #             error_alpha15  = evaluate_model(network, alpha=1.5)
+    #             error_alpha2   = evaluate_model(network, alpha=2)
                 
-                # Log the results:
-                writer.writerow({
-                    'model_type': model_type,
-                    'epochs': epochs,
-                    'runtime_sec': runtime_sec,
-                    'error_alpha1': error_alpha1,
-                    'error_alpha1.5': error_alpha15,
-                    'error_alpha2': error_alpha2
-                })
+    #             # Log the results:
+    #             writer.writerow({
+    #                 'model_type': model_type,
+    #                 'epochs': epochs,
+    #                 'runtime_sec': runtime_sec,
+    #                 'error_alpha1': error_alpha1,
+    #                 'error_alpha1.5': error_alpha15,
+    #                 'error_alpha2': error_alpha2
+    #             })
                 
-                print(f"[{model_type}] Epochs: {epochs}, Runtime: {runtime_sec:.2f} sec, "
-                    f"Errors: (α=1: {error_alpha1:.4f}, α=1.5: {error_alpha15:.4f}, α=2: {error_alpha2:.4f})")
+    #             print(f"[{model_type}] Epochs: {epochs}, Runtime: {runtime_sec:.2f} sec, "
+    #                 f"Errors: (α=1: {error_alpha1:.4f}, α=1.5: {error_alpha15:.4f}, α=2: {error_alpha2:.4f})")
                 
-                # Optionally: Save model state or reset network weights before next experiment, if needed.
+    #             # Optionally: Save model state or reset network weights before next experiment, if needed.
 
 
     # Parameters
