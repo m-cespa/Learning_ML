@@ -12,9 +12,7 @@ __Projects:__
 
 3. PINN:
    Building from the MLP backbone still (stubbornly) in pure NumPy this currently supports a hardcoded autograd to retrieve network derivatives and 2nd derivatives
-   with respect to model inputs (Jacobian & diagonal Hessian) to construct differential Physics Loss functions. Finite difference methods for approximating the model
-   derivatives are also supported (used in testing to validate the manual autograd propagation). Currently implementing batch normalisation layers to help regularisation
-   problems to do with vanishing/diverging network gradients.
+   with respect to model inputs (Jacobian & diagonal Hessian) to construct differential Physics Loss functions.
 
 4. PyTorch projects:
    Folder containing various early PyTorch projects, primarily syntax learning.
