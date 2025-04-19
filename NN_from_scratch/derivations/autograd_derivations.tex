@@ -82,78 +82,50 @@ We can recover several familiar terms from this expression, starting with
 \indent and likewise, simplifying the first term:
 \begin{align}
 \frac{\partial z_j^l}{\partial x_m} 
-&= \frac{\partial}{\partial x_m} \sum_q \left[ w_{jq}^l a_q^{l-1} + b_j^l \right]
-= \sum_q w_{jq}^l \frac{\partial a_q^{l-1}}{\partial x_m}
-= \sum_q w_{jq}^l J_{qm}^{l-1}.
+&= \frac{\partial}{\partial x_m} \sum_p \left[ w_{jp}^l a_p^{l-1} + b_j^l \right]
+= \sum_p w_{jp}^l \frac{\partial a_p^{l-1}}{\partial x_m}
+= \sum_p w_{jp}^l J_{pm}^{l-1}
+= \frac{J_{jm}^l}{A'(z_j^l)}
 \end{align}
 
 Putting these expressions together we yield a recursion relation for the full Hessian:
-\begin{equation}
-H_{jkm}^l = \sum_q \left[ A''(z_j^l) \odot (w_{jq}^l)^2 J_{qm}^{l-1} J_{qk}^{l-1} + A'(z_j^l) \odot w_{jq}^l H_{qkm}^{l-1} \right]
-\end{equation}
+\begin{align}
+H_{jkm}^l &= \frac{A''(z_j^l)}{A'(z_j^l)} \odot J_{jm}^l \sum_q w_{jq}^l J_{qk}^{l-1} + A'(z_j^l) \sum_q w_{jq}^l H_{qkm}^{l-1} \\
+&= \frac{A''(z_j^l)}{\left[ A'(z_j^l) \right]^2} \odot J_{jm}^l \odot J_{jk}^l + A'(z_j^l) \sum_q w_{jq}^l H_{qkm}^{l-1}
+\end{align}
 Finally, we can contract over \(m \, \text{\&} \, k \) to obtain the diagonal Hessian of the \(l^{th}\) layer activations (with respect to the inputs \(x_k\):
 \begin{align}
-H_{jk}^l = \sum_q \left[ A''(z_j^l) \odot ( w_{jq}^l J_{qk}^{l-1} )^2 + A'(z_j^l) \odot w_{jq}^l H_{qk}^{l-1} \right] 
+H_{jk}^l = \frac{A''(z_j^l)}{\left[ A'(z_j^l) \right]^2} \odot ( J_{jk}^l )^2+ A'(z_j^l) \sum_q w_{jq}^l H_{qk}^{l-1}
+\end{align}
+
+Although the above forms are probably the more succinct and interpretable, the divisions by \(A'\) prove problematic when activation functions have stationary points. Undoing some of the substitutions we can return to more computationally stable expressions:
+\begin{align}
+H_{jkm}^l &= A''(z_j^l) \left[ \sum_q w_{jq}^l J_{qm}^{l-1} \right] \left[ \sum_q w_{jq}^l J_{qk}^{l-1} \right] + A'(z_j^l) \sum_q w_{jq}^l H_{qkm}^{l-1} \\
+H_{jk}^l &= A''(z_j^l) \left[ \sum_q w_{jq}^l J_{qk}^{l-1} \right]^2 + A'(z_j^l) \sum_q w_{jq}^l H_{qk}^{l-1}
 \end{align}
 
 
 \section*{Jacobian and Hessian Loss Derivatives:}
-If we construct a Physics Loss using Jacobian and/or diagonal Hessian terms, we will need to propagate the according loss derivative through the network (standard backpropagation). This will require: \(\frac{\partial J_{jk}^L}{\partial a_m^L}\) and \(\frac{\partial H_{jk}^L}{\partial a_m^L}\). We begin with the simpler Jacobian using the form \(J_{jk}^l = \sum_m A'(z_j^l) \odot w_{jm}^l J_{mk}^{l-1}\). First, a useful yet somewhat counterintuitive result is derived for \(\frac{\partial J_{jk}^{l-1}}{\partial a_m^l} \) which is \textit{not} in fact zero.
+If we construct a Physics Loss using Jacobian and/or diagonal Hessian terms, we will need to propagate the according loss derivative through the network (standard backpropagation). This will require: \(\frac{\partial J_{jk}^L}{\partial a_m^L}\) and \(\frac{\partial H_{jk}^L}{\partial a_m^L}\). It turns out that both terms can be obtained quite easily using the chain rule:
 \begin{align}
-\frac{\partial a_m^l}{\partial J_{jk}^{l-1}} &= \sum_p \frac{\partial a_m^l}{\partial x_p} \frac{\partial x_p}{\partial J_{jk}^{l-1}} \\
-&= \sum_p \frac{J_{mp}^l}{H_{jkp}^{l-1}} \\
-\frac{\partial J_{jk}^{l-1}}{\partial a_m^l} &= \sum_p \frac{H_{jkp}^{l-1}}{J_{mp}^l}
+\frac{\partial J_{jk}^L}{\partial a_m^L} &= \sum_q \frac{\partial x_q}{\partial a_m^L} \frac{J_{jk}^L}{\partial x_q} \\
+&= \sum_q \frac{H_{jkq}^L}{J_{mq}^L}
 \end{align}
-
-For the Jacobian derivative, a recursion relation is not needed and we can evaluate it directly for the \(L^{th}\) (output) layer:
-\begin{align}
-\frac{\partial J_{jk}^L}{\partial a_m^L} &= \frac{\partial}{\partial a_m^L} \sum_q \left[ A'(z_j^L) \odot w_{jq}^L J_{qk}^{L-1} \right] \\
-&= \sum_{q} \left[ A''(z_j^L) \odot \frac{\partial z_j^L}{\partial a_m^L} w_{jq}^L J_{qk}^{L-1} \right] + \sum_q \left[ A'(z_j^L) \odot w_{jq}^L \frac{\partial J_{qk}^{L-1}}{\partial a_m^L} \right] \\
-&= \sum_{q} \left[ \delta_{jm} \frac{A''(z_j^L)}{A'(z_m^L)} \odot w_{jq}^L J_{qk}^{L-1} \right] + \sum_{q, r} \left[ A'(z_j^L) \odot w_{jq}^L \frac{H_{qkr}^{L-1}}{J_{mr}^L} \right] \\
-&= \delta_{jm} \frac{A''(z_j^L)}{[A'(z_m^L)]^2} \odot J_{jk}^L + \sum_{q, r} \left[ A'(z_j^L) \odot w_{jq}^L \frac{H_{qkr}^{L-1}}{J_{mr}^L} \right]
-\end{align}
-
-The derivation for the Hessian derivative follows much of the same logic but \text{is} recursive (thus we consider it for a general \(l^{th}\) layer):
-\begin{align}
-\frac{\partial H_{jk}^l}{\partial a_m^l} 
-&= \frac{\partial}{\partial a_m^l} \sum_q \left[ A''(z_j^l) \odot \left( w_{jq}^l J_{qk}^{l-1} \right)^2 + A'(z_j^l) \odot w_{jq}^l H_{qk}^{l-1} \right] \\
-&= \sum_q \Bigg[
-    \delta_{jm} \frac{A'''(z_j^l)}{A'(z_m^l)} \odot \left( w_{jq}^l J_{qk}^{l-1} \right)^2
-    + 2 A''(z_j^l) \odot w_{jq}^l \sum_p \left( \frac{H_{qkp}^{l-1}}{J_{mp}^l} \right) \notag \\
-&\quad
-    + \delta_{jm} \frac{A''(z_j^l)}{A'(z_m^l)} \odot w_{jq}^l H_{qk}^{l-1}
-    + A'(z_j^l) \odot w_{jq}^l \frac{\partial H_{qk}^{l-1}}{\partial a_m^l}
-\Bigg]
-\end{align}
-
-The only problematic term here is \(\frac{\partial H_{qk}^{l-1}}{\partial a_m^l}\) as it does not immediately lend itself to an obvious recursion relation. However, we can consider:
-\begin{align}
-\frac{\partial H_{qk}^{l-1}}{\partial a_m^l} &= \sum_p \frac{\partial H_{qk}^{l-1}}{\partial a_p^{l-1}} \frac{\partial a_{p}^{l-1}}{\partial a_m^l} \\
-&= \sum_p \frac{\partial H_{qk}^{l-1}}{\partial a_p^{l-1}} \frac{1}{A'(z_m^l) \odot w_{mp}^l}
-\end{align}
-
-This \textit{does} seem recursive and we can also spot the base case for \(l=1\):
-\begin{align}
-\frac{\partial H_{qk}^0}{\partial a_m^1} &= \sum_p \frac{\partial H_{qk}^0}{\partial a_m^0} \frac{1}{A'(z_m^1) \odot w_{mp}^1} \\
-&= 0
-\end{align}
-Where we have used the fact that \(a_p^0 \equiv x_k\) (the input layer activations are identical to the model inputs) and from earlier we noted that \(H_{jk}^0 = 0\). Performing the first recursion iteration to demonstrate:
+Similarly for the Hessian:
 \begin{equation}
-\frac{\partial H_{jk}^1}{\partial a_m^1} = \sum_q \delta_{jm} \frac{A'''(z_j^1)}{A'(z_m^1)} \odot \left( w_{jq}^1 J_{qk}^{0} \right)^2
+\frac{\partial H_{jk}^L}{\partial a_m^L} = \sum_q \frac{T_{jkq}^L}{J_{mq}^L}
 \end{equation}
-
-All the terms proportional to \(H_{jkm}^0\), \(H_{jk}^0\) or \(\frac{\partial H_{jk}^0}{\partial a_m^1}\) are zero. For completeness, this is substituted into the earlier equation to give:
+Where we have let \( T_{jkq}^L \equiv \frac{\partial H_{jk}^L}{\partial x_q} \) which turns out to be reasonably straightforward to derive recursively. Bearing in mind the issues of computational stability, we begin the derivation from Eqn. (22):
 \begin{align}
-\frac{\partial H_{jk}^l}{\partial a_m^l} 
-&= \frac{\partial}{\partial a_m^l} \sum_q \left[ A''(z_j^l) \odot \left( w_{jq}^l J_{qk}^{l-1} \right)^2 + A'(z_j^l) \odot w_{jq}^l H_{qk}^{l-1} \right] \\
-&= \sum_q \Bigg[
-    \delta_{jm} \frac{A'''(z_j^l)}{A'(z_m^l)} \odot \left( w_{jq}^l J_{qk}^{l-1} \right)^2
-    + 2 A''(z_j^l) \odot w_{jq}^l \sum_p \left( \frac{H_{qkp}^{l-1}}{J_{mp}^l} \right) \notag \\
-&\quad
-    + \delta_{jm} \frac{A''(z_j^l)}{A'(z_m^l)} \odot w_{jq}^l H_{qk}^{l-1}
-    + A'(z_j^l) \odot w_{jq}^l \sum_p \left( \frac{\partial H_{qk}^{l-1}}{\partial a_p^{l-1}} \frac{1}{A'(z_m^l) \odot w_{mp}^l} \right)
-\Bigg]
+T_{jkm}^l &= \frac{\partial}{\partial x_m} \Bigg[ A''(z_j^l) \left[ \sum_q w_{jq}^l J_{qk}^{l-1} \right]^2 + A'(z_j^l) \sum_q w_{jq}^l H_{qk}^{l-1} \Bigg] \\
+&= A'''(z_j^l) \frac{\partial z_j^l}{\partial x_m} \left[ \sum_q w_{jq}^l J_{qk}^{l-1} \right]^2 + 2A''(z_j^l) \sum_q w_{jq}^l H_{qkm}^{l-1}  \\
+&+ A''(z_j^l) \frac{\partial z_j^l}{\partial x_m} \sum_q w_{jq}^l H_{qk}^{l-1} + A'(z_j^l) \sum_q w_{jq}^l T_{qkm}^{l-1} \\
+&= \left[ \sum_q w_{jq}^l J_{qm}^{l-1} \right] \Bigg[ A'''(z_j^l) \left[ \sum_q w_{jq}^l J_{qk}^{l-1} \right]^2 + A''(z_j^l) \sum_q w_{jq}^l H_{qk}^{l-1} \Bigg] \\
+&+ 2A''(z_j^l) \sum_q w_{jq}^l H_{qkm}^{l-1} + A'(z_j^l) \sum_q w_{jq}^l T_{qkm}^{l-1}
 \end{align}
+Where the relationship in Eqn. (18) has been used to substitute the \(\frac{\partial z_j^l}{\partial x_m}\) terms.
+
+
 
 
 
