@@ -10,6 +10,8 @@ from numba.typed import List as TypedList
 from activation_functions import Tanh, Sin, Sigmoid, ELU, ReLU, Linear, Quadratic
 from optimizers import Optimizer, GD, SGD, Adam, Lion
 
+np.random.seed(42)
+
 import os
 os.environ["OMP_DISPLAY_ENV"] = "FALSE"
 
@@ -23,7 +25,7 @@ def autograd_core(
     A1_list,            # A_prime: list of (batch, out_dim)
     A2_list,            # A_double: list of (batch, out_dim)
     A3_list,            # A_triple: list of (batch, out_dim)
-    tol: float = 1e-3
+    tol: float = 1e-2
 ):
     # Initialise
     overall_J = np.zeros((batch_size, input_dim, input_dim))
@@ -651,12 +653,11 @@ class Network:
         with batch size N.
 
         Optionally evaluates BC and IC loss by imposing:
-            u(L, t) = 0
-            u(0, t) = 0
-            u(x, 0) = 0
+            u(x, 0) = 1 + A * cos(pi * x / L)
+            u(L/2, t) = 1
         """
         collocation_data = collocation_data
-        self.forward(input_data=collocation_data, store_grads=True)
+        _ = self.forward(input_data=collocation_data, store_grads=True).squeeze()
 
         J, H, dJ_da, dH_da, _, _ = self.autograd_numba()
 
@@ -668,19 +669,21 @@ class Network:
         dJ_t_da = np.squeeze(dJ_da[:, :, 1, :])
         dH_x_da = np.squeeze(dH_da[:, :, 0, :])
 
-        residual = (1. * d2u_dx2 - du_dt).squeeze()
+        residual = (0.5 * d2u_dx2 - du_dt).squeeze()
+        dr_da = 0.5 * dH_x_da - dJ_t_da
+
+        residual_loss = 0.5 * np.mean(residual**2, axis=0)
+        residual_grad = np.mean(residual * dr_da, axis=0)
 
         # handle BC/IC terms if provided
         if boundary_data is not None:
-            ics_bcs = self.forward(input_data=boundary_data, store_grads=False)
-            bc_loss = 0.5 * np.mean(ics_bcs**2, axis=0)
-            bc_grad = np.mean(ics_bcs, axis=0)
+            ics_bcs, ic_bc_targets = boundary_data
+            model_out = self.forward(input_data=ics_bcs, store_grads=False)
+            bc_loss = 0.5 * np.mean((model_out - ic_bc_targets)**2, axis=0)
+            bc_grad = np.mean(model_out - ic_bc_targets, axis=0)
         else:
             bc_loss = 0.
             bc_grad = 0.
-
-        residual_loss = 0.5 * np.mean(residual**2, axis=0)
-        residual_grad = np.mean((1. * dH_x_da - dJ_t_da) * residual, axis=0)
         
         # gradient clipping for numerical stability
         max_grad_norm = 1.
@@ -739,7 +742,7 @@ class Network:
 
         # NOTE: forward pass is performed AFTER physics loss as the physics loss
         # leaves network activations changed (no longer correspond to the training data)
-        forward_out = self.forward(data, store_grads)
+        forward_out = self.forward(data, store_grads=False)
         N_batch = forward_out.shape[0] if self.batch_training else 1
 
         assert forward_out.shape == label.shape
@@ -751,7 +754,7 @@ class Network:
         mse_error = (forward_out - label) / N_batch
 
         # add physics loss term to total loss and error to propagate
-        # apply lambda weighting to physics losos terms
+        # apply lambda weighting to physics loss terms
         loss += self.lambda1 * residual_loss + self.lambda2 * bc_loss
         error = mse_error + self.lambda1 * residual_grad + self.lambda2 * bc_grad
 
@@ -774,7 +777,7 @@ class Network:
         return loss, residual_loss
     
     def evaluate_relative_error(self, num_points: int = 100) -> float:
-        T = 1 / ((np.pi / 10.) ** 2)
+        T = 1 / (0.5 * (np.pi / 10.) ** 2)
 
         x_eval = np.linspace(0, 10., num_points)
         t_eval = np.linspace(0, T, num_points)
@@ -782,7 +785,7 @@ class Network:
         eval_points = np.stack([X.flatten(), T_.flatten()], axis=1)
 
         # ground truth
-        u_true = np.sin(np.pi * eval_points[:, 0] / 10.) * np.exp((np.pi / 10.)**2 * -eval_points[:, 1])
+        u_true = 1. + 0.5 * np.cos(np.pi * eval_points[:, 0] / 10.) * np.exp(-0.5 * (np.pi / 10.)**2 * eval_points[:, 1])
 
         # network solution
         u_pred = self.forward(eval_points).squeeze()
@@ -792,12 +795,21 @@ class Network:
         return relative_error
 
     @staticmethod
-    def adaptive_lr_schedule(current_lr: float, decay: float=0.999) -> float:
+    def adaptive_lr_schedule(current_lr: float, decay: float=0.99) -> float:
         return current_lr * decay
+    
+    @staticmethod
+    def shuffle_batches(batches, batch_dim):
+        X = np.vstack([b[0] for b in batches])
+        y = np.vstack([b[1] for b in batches])
+        perm = np.random.permutation(len(X))
+        X, y = X[perm], y[perm]
+        return [(X[i:i+batch_dim], y[i:i+batch_dim])
+                for i in range(0, len(X), batch_dim)]
 
     def learn(self, learn_data: List[Tuple[np.ndarray, np.ndarray]], lr: float, epochs: int, loss_func: str,
-            collocation_data=None, boundary_data=None, store_grads: bool=False, decay: float=0.999,
-            test_collocation_data=None, track_diagnostics: bool=False):
+            collocation_data=None, boundary_data=None, store_grads: bool=False, decay: float=0.99,
+            test_collocation_data=None, track_diagnostics: bool=False, plot: bool=True):
         """
         Trains model on provided dataset.
 
@@ -813,11 +825,15 @@ class Network:
             test_collocation_data: Used to compute residuals on unseen collocation data.
             track_diagnostics: If False, only returns total loss history.
 
+            plot: Will plot the learning curve after training.
+
         Returns:
             Dict with training history. Keys vary based on `track_diagnostics`.
         """
         N = len(learn_data)
         total_losses = []
+
+        batch_dim = learn_data[0][0].shape[0]
 
         # optional tracking
         residual_losses = [] if track_diagnostics else None
@@ -825,7 +841,6 @@ class Network:
         relative_errors = [] if track_diagnostics else None
 
         for epoch in tqdm(range(epochs), desc="Training Progress"):
-            random.shuffle(learn_data)
             epoch_total_loss = 0
             epoch_residual_loss = 0
 
@@ -850,6 +865,14 @@ class Network:
                 relative_errors.append(relative_domain_error)
 
             lr = self.adaptive_lr_schedule(lr, decay)
+            learn_data = self.shuffle_batches(learn_data, batch_dim)
+
+        if plot:
+            plt.figure(figsize=(8,6))
+            plt.ylabel(r'Training Loss')
+            plt.xlabel(r'Epoch')
+            plt.plot(list(range(epochs)), total_losses)
+            plt.show()
 
         # return minimal or full diagnostics
         history = {"total_losses": total_losses}
@@ -870,7 +893,7 @@ class Network:
 
         params = {}
         for i, layer in enumerate(self.layers):
-            if isinstance(layer, Layer):
+            if isinstance(layer, Layer) and hasattr(layer, 'W') and hasattr(layer, 'B'):
                 params[f'layer_{i}_W'] = layer.W
                 params[f'layer_{i}_B'] = layer.B
 
@@ -885,6 +908,6 @@ class Network:
 
         params = np.load(file_path, allow_pickle=True)
         for i, layer in enumerate(self.layers):
-            if isinstance(layer, Layer):
+            if isinstance(layer, Layer) and f'layer_{i}_W' in params and f'layer_{i}_B' in params:
                 layer.W = params[f'layer_{i}_W']
                 layer.B = params[f'layer_{i}_B']    
